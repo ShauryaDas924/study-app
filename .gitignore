@@ -1,0 +1,44 @@
+# ---------- ENVIRONMENT ----------
+.env
+.env.*
+*.env
+
+# ---------- PYTHON ----------
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ---------- FASTAPI ----------
+*.sqlite3
+*.db
+
+# ---------- NODE ----------
+node_modules/
+.next/
+dist/
+build/
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+
+# ---------- IDE ----------
+.vscode/
+.idea/
+
+# ---------- LOGS ----------
+*.log
+
+# ---------- CACHE ----------
+.cache/
+
+# ---------- TEST ----------
+.pytest_cache/
+
+# ---------- MISC ----------
+coverage/

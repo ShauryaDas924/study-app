@@ -1,0 +1,94 @@
+{
+  "type": "object",
+  "required": [
+    "metadata",
+    "prompt",
+    "reasoning_path",
+    "common_mistakes",
+    "solution",
+    "confidence_tags"
+  ],
+  "properties": {
+
+    "metadata": {
+      "type": "object",
+      "required": [
+        "concepts",
+        "difficulty",
+        "cognitive_skill",
+        "subject_tag"
+      ],
+      "properties": {
+        "concepts": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "difficulty": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "cognitive_skill": {
+          "type": "string",
+          "enum": ["recall", "application", "reasoning", "synthesis"]
+        },
+        "subject_tag": {
+          "type": "string"
+        }
+      }
+    },
+
+    "prompt": {
+      "type": "string"
+    },
+
+    "reasoning_path": {
+      "type": "array",
+      "minItems": 3,
+      "items": { "type": "string" }
+    },
+
+    "common_mistakes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["description", "why_wrong"],
+        "properties": {
+          "description": { "type": "string" },
+          "why_wrong": { "type": "string" }
+        }
+      }
+    },
+
+    "solution": {
+      "type": "object",
+      "required": ["steps", "final_answer"],
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "final_answer": {
+          "type": "string"
+        },
+        "interpretation": {
+          "type": "string"
+        }
+      }
+    },
+
+    "confidence_tags": {
+      "type": "object",
+      "required": [
+        "formula_selection_required",
+        "multi_step",
+        "concept_combo"
+      ],
+      "properties": {
+        "formula_selection_required": { "type": "boolean" },
+        "multi_step": { "type": "boolean" },
+        "concept_combo": { "type": "boolean" }
+      }
+    }
+  }
+}
