@@ -9,6 +9,7 @@ from app.services.llm import client, top_k_concepts, grounding_confidence
 from app.services.file_extraction import extract_text
 from app.services.auth import get_current_user_id
 from app.models import Mastery
+from app.services.file_extraction import split_homework_questions
 router = APIRouter(prefix="/homework", tags=["homework"])
 
 
@@ -245,14 +246,15 @@ async def homework_upload_help(
     content = await file.read()
     text = await extract_text(file.filename, content)
 
-    return await homework_help(
-        HWIn(
-            class_id=class_id,
-            question=text[:2000]
-        ),
-        db=db,
-        current_user_id=current_user_id
-    )
+    
+
+    questions = split_homework_questions(text)
+
+    
+    return {
+        "questions": questions,
+        "count": len(questions)
+    }
 
 @router.delete("/chat-history/{class_id}")
 async def clear_chat(

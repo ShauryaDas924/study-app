@@ -6,6 +6,7 @@ from pptx import Presentation
 from io import BytesIO
 from dotenv import load_dotenv
 import os
+import re
 USE_VISION = True
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -84,3 +85,32 @@ async def extract_text(filename: str, file_bytes: bytes) -> str:
         return extract_from_ppt(file_bytes)
 
     return "Unsupported file type"
+
+
+# ------------------------
+# HOMEWORK QUESTION SPLITTER
+# ------------------------
+
+
+
+def split_homework_questions(text: str):
+
+    # Splits on patterns like:
+    # 1)
+    # 1.
+    # Question 1
+    # Q1
+
+    pattern = r"(?:^|\n)(?:Question\s*\d+|\d+\)|\d+\.)"
+
+    parts = re.split(pattern, text)
+
+    questions = []
+
+    for p in parts:
+        p = p.strip()
+
+        if len(p) > 20:
+            questions.append(p)
+
+    return questions
