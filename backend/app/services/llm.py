@@ -666,7 +666,20 @@ def grounding_confidence(answer: str, concepts: list):
             hits += 1
 
     return round(hits / max(1, len(concepts)), 2)
-    
+
+def normalize_concept_name(name: str):
+
+    name = name.lower().strip()
+
+    name = name.replace(" distribution","")
+    name = name.replace("_distribution","")
+
+    name = name.replace(" theorem","")
+    name = name.replace("_theorem","")
+
+    return name
+
+
 async def extract_concepts_from_note(note_text: str):
     cleaned = clean_note_text(note_text)
     resp = client.chat.completions.create(
@@ -701,7 +714,13 @@ async def extract_concepts_from_note(note_text: str):
 
     concepts = booster_review_sections(cleaned, concepts)
 
-    concepts = list({c["name"]: c for c in concepts}.values())
+    normalized = {}
+
+    for c in concepts:
+        key = normalize_concept_name(c["name"])
+        normalized[key] = c
+
+    concepts = list(normalized.values())
 
     filtered = []
 
@@ -709,7 +728,7 @@ async def extract_concepts_from_note(note_text: str):
         conf = c.get("confidence", 0)
 
         # keep high confidence
-        if conf >= 0.30:
+        if conf >= 0.40:
             filtered.append(c)
             continue
 
@@ -721,7 +740,7 @@ async def extract_concepts_from_note(note_text: str):
     ranked = await rank_exam_importance(filtered)
 
     # keep more concepts
-    return ranked[:60]
+    return [c for c in ranked if c.get("exam_score",0) >= 0.45][:60]
 
 async def rank_exam_importance(concepts: list[dict]):
 
@@ -953,7 +972,9 @@ You are an expert educator.
 Create the MAXIMUM number of useful flashcards from these concepts.
 
 Rules:
-- Generate 1–3 flashcards per concept
+Generate 1–2 flashcards per concept.
+Only generate additional cards if they test a DISTINCT idea.
+Avoid near-duplicate questions.
 - Cover definitions, applications, comparisons
 - Do NOT repeat ideas
 - Stop only when additional cards would be redundant
@@ -982,4 +1003,11 @@ Return ONLY JSON:
     if not parsed:
         return []
 
-    return parsed.get("flashcards", [])
+    cards = parsed.get("flashcards", [])
+
+    unique = {}
+    for c in cards:
+        key = c["question"].strip().lower()
+        unique[key] = c
+
+    return list(unique.values())

@@ -39,16 +39,20 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
         concepts = await extract_concepts_from_note(note_text)
 
     created = []
-    for c in concepts:
-        concept = Concept(
-            user_id=note.user_id,
-            class_id=note.class_id,
-            name=c["name"],
-            description=c.get("description"),
-            definition=c.get("definition"),
-            when_to_use=c.get("when_to_use"),
-            pitfalls=c.get("pitfalls"),
+    existing_names_res = await db.execute(
+        select(Concept.name).where(
+            Concept.user_id == note.user_id,
+            Concept.class_id == note.class_id
         )
+    )
+
+    existing_names = {r[0] for r in existing_names_res.fetchall()}
+
+
+    for c in concepts:
+    
+        if c["name"] in existing_names:
+            continue
         
 
         text = f"""

@@ -19,6 +19,7 @@ from uuid import UUID
 from app.models import Flashcard
 from app.models import FlashcardState
 from datetime import datetime
+from sqlalchemy import select
 router = APIRouter(prefix="/upload", tags=["upload"])
 
 
@@ -41,6 +42,20 @@ async def upload_note(
     saved_concepts = []
 
     for c in concepts:
+        existing_res = await db.execute(
+            select(Concept).where(
+                Concept.user_id == user_id,
+                Concept.class_id == class_id,
+                Concept.name == c["name"]
+            )
+        )
+
+        existing_concept = existing_res.scalar_one_or_none()
+
+        if existing_concept:
+            saved_concepts.append(existing_concept)
+            continue
+            
         concept = Concept(
             user_id=user_id,
             class_id=class_id,
@@ -70,14 +85,25 @@ async def upload_note(
     # 4️⃣ Save flashcards + SRS state
     for fc, concept in all_flashcards:
 
+        existing_res = await db.execute(
+            select(Flashcard).where(
+                Flashcard.user_id == user_id,
+                Flashcard.class_id == class_id,
+                Flashcard.question == fc["question"]
+            )
+        )
+
+        existing = existing_res.scalar_one_or_none()
+
+        if existing:
+            continue
+
         card = Flashcard(
             user_id=user_id,
             class_id=class_id,
-            concept_id=concept.id,  # ⭐ REQUIRED
+            concept_id=concept.id,
             question=fc["question"],
-            answer=fc["answer"],
-            confidence=concept.confidence,
-            next_review=datetime.utcnow()
+            answer=fc["answer"]
         )
 
         db.add(card)
