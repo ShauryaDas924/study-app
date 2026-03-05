@@ -239,7 +239,7 @@ def booster_distributions(note_text: str, concepts: list):
     existing = {c["name"] for c in concepts}
 
     for term in found:
-        snake = term.lower()
+        snake = normalize_concept_name(term.lower())
 
         if snake not in existing:
             concepts.append({
@@ -320,7 +320,7 @@ If a named law, theorem, or model appears,
 assign confidence ≥ 0.7 unless clearly minor.
 
 QUALITY RULES:
-- Return 15–40 concepts if available  
+- Return 25–80 concepts if available  
 - Cover ALL major sections of the text  
 - Include both major and supporting concepts  
 - Each concept must be concrete and testable  
@@ -357,10 +357,20 @@ Return JSON ONLY:
     {
       "name":"snake_case_name",
       "description":"clear one-sentence explanation",
+      "evidence":"exact phrase or sentence copied from the text",
       "confidence":0.0
     }
   ]
 }
+
+CRITICAL RULE:
+
+Every concept MUST include an "evidence" field.
+
+Evidence must be copied EXACTLY from the notes.
+
+If you cannot find supporting text,
+DO NOT include the concept.
 """
 
 MATH_CONCEPT_PROMPT = """
@@ -494,10 +504,20 @@ Return JSON ONLY:
     {
       "name":"snake_case_name",
       "description":"precise mathematical explanation",
+      "evidence":"exact phrase or equation copied from the notes",
       "confidence":0.0
     }
   ]
 }
+
+CRITICAL RULE:
+
+Every concept MUST include an "evidence" field.
+
+Evidence must be copied EXACTLY from the notes.
+
+If you cannot find supporting text,
+DO NOT include the concept.
 """
 
 EXAM_RANK_PROMPT = """
@@ -700,7 +720,19 @@ async def extract_concepts_from_note(note_text: str):
         return []
 
     concepts = parsed["concepts"]
+    # -------- GROUNDING CHECK --------
 
+    grounded = []
+
+    for c in concepts:
+
+        evidence = c.get("evidence","").lower()
+
+        if evidence and evidence.lower().strip()[:50] in cleaned.lower():
+            grounded.append(c)
+
+    concepts = grounded
+    
     concepts = booster_add_named_concepts(
         cleaned,
         concepts
@@ -738,9 +770,19 @@ async def extract_concepts_from_note(note_text: str):
 
     # ⭐ ADD THIS PART
     ranked = await rank_exam_importance(filtered)
+    for c in ranked:
+        c["final_score"] = (
+            0.6 * c.get("confidence", 0.5)
+            + 0.4 * c.get("exam_score", 0.5)
+        )
 
+    ranked.sort(key=lambda x: x["final_score"], reverse=True)
     # keep more concepts
-    return [c for c in ranked if c.get("exam_score",0) >= 0.45][:60]
+    ranked = [c for c in ranked if c.get("exam_score",0) >= 0.45]
+
+    # ranked = semantic_dedupe(ranked)
+
+    return ranked[:60]
 
 async def rank_exam_importance(concepts: list[dict]):
 
@@ -794,6 +836,18 @@ async def extract_math_concepts_from_note(note_text: str):
         return []
 
     concepts = parsed["concepts"]
+    # -------- GROUNDING CHECK --------
+
+    grounded = []
+
+    for c in concepts:
+
+        evidence = c.get("evidence","").lower()
+
+        if evidence and evidence.lower().strip()[:50] in cleaned.lower():
+            grounded.append(c)
+
+    concepts = grounded
 
     concepts = booster_math_formulas(cleaned, concepts)
     concepts = booster_distributions(cleaned, concepts)
@@ -803,7 +857,8 @@ async def extract_math_concepts_from_note(note_text: str):
     concepts = list({c["name"]: c for c in concepts}.values())
     ranked = await rank_exam_importance(concepts)
 
-    return concepts[:80]
+    ranked = await rank_exam_importance(concepts)
+    return ranked[:80]
 
 async def generate_one_question(concepts: list, difficulty: int, subject_tag: str, context_blob="", concept_details: list | None = None):
     payload = {
@@ -967,24 +1022,60 @@ async def generate_flashcards_from_concepts(concepts: list[dict]):
             {
                 "role":"system",
                 "content":"""
-You are an expert educator.
+You are an expert learning scientist and educator.
 
-Create the MAXIMUM number of useful flashcards from these concepts.
+Create HIGH-QUALITY atomic flashcards.
 
-Rules:
-Generate 1–2 flashcards per concept.
-Only generate additional cards if they test a DISTINCT idea.
-Avoid near-duplicate questions.
-- Cover definitions, applications, comparisons
-- Do NOT repeat ideas
-- Stop only when additional cards would be redundant
-- Quality > quantity but be thorough
+Follow the MINIMUM INFORMATION PRINCIPLE used by Anki.
 
-Return ONLY JSON:
+RULES
+
+1. Each flashcard must test ONE idea only.
+2. Avoid multi-item list questions.
+3. Prefer recognition questions over recall lists.
+4. Answers must be SHORT (1-2 lines max).
+5. Important concepts should generate MULTIPLE cards.
+
+CARD TYPES TO GENERATE
+
+For each concept try to generate:
+
+• Definition card
+• Identification card
+• Comparison card (if applicable)
+• Application card (if concept implies usage)
+
+GOOD examples:
+
+Q: What type of process has fixed sequences and rare exceptions?
+A: Structured process
+
+Q: Which business process type supports strategic decisions?
+A: Dynamic processes
+
+BAD examples:
+
+Q: What are the three types of processes?
+A: Structured, Dynamic, Hybrid
+
+Do NOT generate large list answers.
+
+EXAMPLE RULE
+
+If evidence contains an example or scenario,
+create a flashcard testing the example.
+
+DO NOT invent information not supported by evidence.
+
+Return JSON ONLY:
 
 {
   "flashcards":[
-    {"question":"...","answer":"..."}
+    {
+      "question":"...",
+      "answer":"...",
+      "confidence":0.8
+    }
   ]
 }
 """
@@ -1011,3 +1102,21 @@ Return ONLY JSON:
         unique[key] = c
 
     return list(unique.values())
+
+def semantic_dedupe(concepts, threshold=0.92):
+
+    unique = []
+
+    for c in concepts:
+        keep = True
+        for u in unique:
+            if cosine_sim(
+                np.array(c["embedding"]),
+                np.array(u["embedding"])
+            ) > threshold:
+                keep = False
+                break
+        if keep:
+            unique.append(c)
+
+    return unique

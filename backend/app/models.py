@@ -60,7 +60,7 @@ class Concept(Base):
     when_to_use = Column(Text, nullable=True)
     pitfalls = Column(Text, nullable=True)
     confidence = Column(Float, nullable=False, server_default=text("0.5"))
-
+    evidence = Column(Text, nullable=True)
     embedding = Column(Vector(1536), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -246,6 +246,7 @@ class ChatMemory(Base):
 
     user_id = Column(UUID(as_uuid=True), index=True)
     class_id = Column(UUID(as_uuid=True), index=True)
+  
 
     role = Column(Text)   # "user" or "assistant"
     content = Column(Text)
@@ -256,6 +257,9 @@ class ChatMemory(Base):
 # ----------------------
 # FLASHCARDS
 # ----------------------
+# ----------------------
+# FLASHCARDS
+# ----------------------
 class Flashcard(Base):
     __tablename__ = "flashcards"
 
@@ -263,19 +267,20 @@ class Flashcard(Base):
 
     user_id = Column(UUID(as_uuid=True), index=True)
     class_id = Column(UUID(as_uuid=True), index=True)
+
+    # ✅ ADD THIS (safe + backwards compatible)
+    note_id = Column(UUID(as_uuid=True), ForeignKey("notes.id"), nullable=True, index=True)
+
     concept_id = Column(UUID(as_uuid=True), ForeignKey("concepts.id"), nullable=True)
 
     question = Column(Text, nullable=False)
     answer = Column(Text, nullable=False)
     confidence = Column(Float, nullable=False, server_default=text("0.5"))
-    # spaced repetition
     next_review = Column(DateTime(timezone=True), server_default=func.now())
     interval_days = Column(Integer, server_default=text("1"))
     review_count = Column(Integer, server_default=text("0"))
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
 # ----------------------
 # FLASHCARD SRS
 # ----------------------

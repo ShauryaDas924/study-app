@@ -2,19 +2,23 @@
 import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi.responses import StreamingResponse
+import csv
+import io
 from sqlalchemy import select
 from uuid import UUID
 from app.services.llm import embed_text
 from app.db import get_db
-from app.models import Note, Concept, NoteConcept
+from app.models import Note, Concept, NoteConcept, Flashcard, FlashcardState, Mastery
 from app.services.auth import get_current_user_id
 from app.services.llm import (
     extract_concepts_from_note,
     extract_math_concepts_from_note
 )
-from app.models import Flashcard
+from app.services.llm import generate_flashcards_from_concepts
+from datetime import timedelta
+
 from datetime import datetime
-from app.models import FlashcardState
 from datetime import datetime, timezone
 from pydantic import BaseModel
 router = APIRouter(prefix="/notes", tags=["concepts"])
@@ -46,49 +50,103 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
         )
     )
 
-    existing_names = {r[0] for r in existing_names_res.fetchall()}
+    existing_names = {r[0].lower() for r in existing_names_res.fetchall()}
 
 
     for c in concepts:
+
+        if c["name"].lower() in existing_names:
+            existing_concept = await db.execute(
+                select(Concept).where(
+                    Concept.name.ilike(c["name"]),
+                    Concept.user_id == note.user_id,
+                    Concept.class_id == note.class_id
+                )
+            )
+            concept = existing_concept.scalars().first()
     
-        if c["name"] in existing_names:
+            link = NoteConcept(
+                note_id=note.id,
+                concept_id=concept.id,
+                weight=float(c.get("confidence", 1.0))
+            )
+            db.add(link)
             continue
-        
+
+        concept = Concept(
+            user_id=note.user_id,
+            class_id=note.class_id,
+            name=c["name"],
+            description=c.get("description"),
+            definition=c.get("description"),
+            when_to_use=None,
+            pitfalls=None,
+            confidence=float(c.get("confidence", 0.5)),
+            evidence=c.get("evidence")
+        )
+
+        db.add(concept)
+        await db.flush()
 
         text = f"""
         {concept.name}
         {concept.description or ""}
         {concept.definition or ""}
-        {concept.when_to_use or ""}
-        {concept.pitfalls or ""}
         """
 
         concept.embedding = embed_text(text)
-        db.add(concept)
-        await db.flush()
 
         link = NoteConcept(
             note_id=note.id,
             concept_id=concept.id,
             weight=float(c.get("confidence", 1.0))
         )
+
         db.add(link)
-        
-
-        
-        # ⭐ AUTO FLASHCARD CREATION
-        fc = Flashcard(
-            user_id=note.user_id,
-            class_id=note.class_id,
-            concept_id=concept.id,
-            question=f"What is {concept.name.replace('_',' ')}?",
-            answer=concept.description or concept.definition or "No description",
-            next_review=datetime.utcnow()
-        )
-
-        db.add(fc)
         created.append({"id": str(concept.id), "name": concept.name})
+    # -------- SMART FLASHCARD GENERATION --------
 
+    if concepts:
+        flashcards = await generate_flashcards_from_concepts(concepts)
+
+        # get created concept objects
+        concept_lookup = {}
+
+        for c in concepts:
+            res = await db.execute(
+                select(Concept.id).where(
+                    Concept.name.ilike(c["name"]),
+                    Concept.class_id == note.class_id,
+                    Concept.user_id == note.user_id
+                )
+            )
+            cid = res.scalar()
+            if cid:
+                concept_lookup[c["name"]] = cid
+
+        for card in flashcards:
+
+            matched_concept_id = None
+
+            for name, cid in concept_lookup.items():
+                if name.replace("_", " ") in (
+                    card["question"] + " " + card["answer"]
+                ).lower():
+                    matched_concept_id = cid
+                    break
+
+            fc = Flashcard(
+                user_id=note.user_id,
+                class_id=note.class_id,
+                note_id=note.id,
+                concept_id=matched_concept_id,   # ⭐ important fix
+                question=card["question"],
+                answer=card["answer"],
+                confidence=float(card.get("confidence", 0.7)),
+                next_review=datetime.utcnow()
+            )
+
+            db.add(fc)
     await db.commit()
     return {"message": "Concepts extracted", "concepts": created}
 
@@ -124,24 +182,15 @@ async def flashcards_by_class(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
-
-    now = datetime.now(timezone.utc)
-
-    # join Flashcard ↔ FlashcardState properly
     res = await db.execute(
         select(Flashcard)
-        .outerjoin(
-            FlashcardState,
-            (FlashcardState.concept_id == Flashcard.concept_id)
-            & (FlashcardState.user_id == user_id)
-        )
         .where(
             Flashcard.user_id == user_id,
             Flashcard.class_id == class_id
         )
-        .limit(200)
+        .order_by(Flashcard.created_at.desc())
+        .limit(500)
     )
-
     cards = res.scalars().all()
 
     return [
@@ -149,12 +198,148 @@ async def flashcards_by_class(
             "id": str(c.id),
             "question": c.question,
             "answer": c.answer,
-            "confidence": float(c.confidence)
+            "confidence": float(c.confidence or 0.5),
+            "note_id": str(c.note_id) if getattr(c, "note_id", None) else None,
         }
         for c in cards
     ]
 
 
+@router.get("/flashcards/by-note/{note_id}")
+async def flashcards_by_note(
+    note_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
+):
+    # Get note (we need its class_id for fallback)
+    note_res = await db.execute(
+        select(Note).where(Note.id == note_id, Note.user_id == user_id)
+    )
+    note = note_res.scalar_one_or_none()
+    if not note:
+        raise HTTPException(404, "Note not found")
+
+    # 1) NEW system: flashcards stamped with note_id
+    res = await db.execute(
+        select(Flashcard)
+        .where(
+            Flashcard.user_id == user_id,
+            Flashcard.note_id == note_id
+        )
+        .order_by(Flashcard.created_at.desc())
+        .limit(500)
+    )
+    cards = res.scalars().all()
+
+    # 2) Old-but-linkable: concept_id ↔ note_concepts
+    if not cards:
+        res2 = await db.execute(
+            select(Flashcard)
+            .join(NoteConcept, NoteConcept.concept_id == Flashcard.concept_id)
+            .where(
+                Flashcard.user_id == user_id,
+                NoteConcept.note_id == note_id
+            )
+            .order_by(Flashcard.created_at.desc())
+            .limit(500)
+        )
+        cards = res2.scalars().all()
+
+    # 3) HARD fallback: legacy unassigned cards for this class
+    # This is the key fix for "I have flashcards but by-note is empty".
+    if not cards:
+        res3 = await db.execute(
+            select(Flashcard)
+            .where(
+                Flashcard.user_id == user_id,
+                Flashcard.class_id == note.class_id,
+                Flashcard.note_id.is_(None)   # legacy/unassigned
+            )
+            .order_by(Flashcard.created_at.desc())
+            .limit(500)
+        )
+        cards = res3.scalars().all()
+
+    return [
+        {
+            "id": str(c.id),
+            "question": c.question,
+            "answer": c.answer,
+            "confidence": float(c.confidence or 0.5),
+            "note_id": str(c.note_id) if getattr(c, "note_id", None) else None,
+        }
+        for c in cards
+    ]
+
+
+@router.get("/flashcards/export-by-note/{note_id}")
+async def export_flashcards_csv_by_note(
+    note_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
+):
+    # Get note for class fallback
+    note_res = await db.execute(
+        select(Note).where(Note.id == note_id, Note.user_id == user_id)
+    )
+    note = note_res.scalar_one_or_none()
+    if not note:
+        raise HTTPException(404, "Note not found")
+
+    # 1) new way
+    res = await db.execute(
+        select(Flashcard)
+        .where(
+            Flashcard.user_id == user_id,
+            Flashcard.note_id == note_id
+        )
+        .order_by(Flashcard.created_at.desc())
+    )
+    cards = res.scalars().all()
+
+    # 2) old concept-linked
+    if not cards:
+        res2 = await db.execute(
+            select(Flashcard)
+            .join(NoteConcept, NoteConcept.concept_id == Flashcard.concept_id)
+            .where(
+                Flashcard.user_id == user_id,
+                NoteConcept.note_id == note_id
+            )
+            .order_by(Flashcard.created_at.desc())
+        )
+        cards = res2.scalars().all()
+
+    # 3) legacy unassigned
+    if not cards:
+        res3 = await db.execute(
+            select(Flashcard)
+            .where(
+                Flashcard.user_id == user_id,
+                Flashcard.class_id == note.class_id,
+                Flashcard.note_id.is_(None)
+            )
+            .order_by(Flashcard.created_at.desc())
+        )
+        cards = res3.scalars().all()
+
+    if not cards:
+        raise HTTPException(404, "No flashcards found")
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Question", "Answer", "Confidence"])
+
+    for c in cards:
+        writer.writerow([c.question, c.answer, float(c.confidence or 0.5)])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=flashcards_{note_id}.csv"},
+    )
+    
 class ReviewIn(BaseModel):
     rating: str  # "easy" | "medium" | "hard"
 
@@ -182,7 +367,20 @@ async def review_flashcard(
 
     fs.due_at = datetime.now(timezone.utc) + timedelta(days=fs.interval_days)
     fs.last_reviewed_at = datetime.now(timezone.utc)
+    # -------- UPDATE MASTERY --------
 
+    m = await db.get(
+        Mastery,
+        {"user_id": user_id, "concept_id": concept_id}
+    )
+
+    if m:
+        if payload.rating == "easy":
+            m.mastery_prob = min(0.95, m.mastery_prob + 0.05)
+        elif payload.rating == "medium":
+            m.mastery_prob = min(0.95, m.mastery_prob + 0.02)
+        else:
+            m.mastery_prob = max(0.05, m.mastery_prob - 0.07)
     await db.commit()
 
     return {"ok": True}
