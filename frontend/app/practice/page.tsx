@@ -1,0 +1,66 @@
+"use client";
+
+import { useEffect } from "react";
+import { Card, CardHeader } from "@/components/ui/Card";
+import PracticeSetup from "@/components/PracticeSetup";
+import PracticePlayer from "@/components/PracticePlayer";
+import { useStore } from "@/store/useStore";
+
+export default function PracticePage() {
+
+  const classId = useStore(s => s.selectedClassId);
+  const setPracticeSession = useStore(s => s.setPracticeSession);
+  const setPracticeIndex = useStore(s => s.setPracticeIndex);
+
+  // ✅ AUTO LOAD LATEST PRACTICE
+  useEffect(() => {
+    if (!classId) return;
+
+    fetch(`http://localhost:8000/practice/latest/${classId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.questions?.length) return;
+
+        setPracticeSession(
+          data.practice_set_id,
+          data.questions
+        );
+
+        // restore saved index
+        const savedIndex = Number(
+          localStorage.getItem("practiceIndex") || 0
+        );
+
+        setTimeout(() => {
+          setPracticeIndex(savedIndex);
+        }, 50);
+      })
+      .catch(() => console.log("No previous practice found"));
+
+  }, [classId]);
+
+  return (
+    <div className="py-7 space-y-6">
+      <div>
+        <h1 className="text-3xl font-semibold text-slate-900">
+          Practice
+        </h1>
+
+        <p className="text-slate-500 mt-1">
+          Exam-style questions. Structured reasoning.
+          Misconceptions tracked automatically.
+        </p>
+      </div>
+
+      <Card>
+        <CardHeader
+          title="Generate Practice"
+          subtitle="Uses your extracted concepts + mastery weighting in the backend."
+        />
+        <PracticeSetup />
+      </Card>
+
+      <PracticePlayer />
+    </div>
+  );
+}
