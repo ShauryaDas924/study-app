@@ -1,8 +1,3 @@
-
-
-
-
-
 import re
 import os, json
 import pathlib
@@ -780,7 +775,7 @@ async def extract_concepts_from_note(note_text: str):
     # keep more concepts
     ranked = [c for c in ranked if c.get("exam_score",0) >= 0.45]
 
-    # ranked = semantic_dedupe(ranked)
+    ranked = semantic_dedupe(ranked)
 
     return ranked[:60]
 
@@ -855,8 +850,6 @@ async def extract_math_concepts_from_note(note_text: str):
     concepts = booster_add_named_concepts(cleaned, concepts)
 
     concepts = list({c["name"]: c for c in concepts}.values())
-    ranked = await rank_exam_importance(concepts)
-
     ranked = await rank_exam_importance(concepts)
     return ranked[:80]
 
@@ -1030,20 +1023,55 @@ Follow the MINIMUM INFORMATION PRINCIPLE used by Anki.
 
 RULES
 
-1. Each flashcard must test ONE idea only.
-2. Avoid multi-item list questions.
-3. Prefer recognition questions over recall lists.
-4. Answers must be SHORT (1-2 lines max).
-5. Important concepts should generate MULTIPLE cards.
+1. Each flashcard must test ONE meaningful concept.
+2. Do NOT split a definition into trivial micro-questions.
+3. Prefer ONE strong definition card over several tiny fragments.
+4. Answers must be SHORT (1–2 lines max).
+5. Generate between 3 and 5 flashcards per concept.
+6. Avoid paraphrasing the same concept multiple times.
+7. Prefer deeper conceptual questions over surface rewording.
+8. Do NOT create multiple cards asking the same definition in different wording.
 
-CARD TYPES TO GENERATE
+CARD TYPE MIX
 
-For each concept try to generate:
+Across the deck maintain approximately:
 
-• Definition card
-• Identification card
-• Comparison card (if applicable)
-• Application card (if concept implies usage)
+35% Definition cards
+30% Understanding cards
+20% Comparison cards
+10% Application cards
+5% Recognition cards
+
+REQUIRED PER CONCEPT
+
+Generate at least:
+
+• 1 Definition card
+• 1 Understanding card
+
+OPTIONAL BUT PREFERRED
+
+• 1 Comparison card if related concepts exist
+• 1 Application card if a scenario is possible
+• 1 Recognition card resembling exam style
+
+COMPARISON RULE
+
+If multiple related concepts exist (e.g., ERP vs MRP, CPU vs RAM),
+generate comparison questions.
+
+LIST HANDLING RULE
+
+If the evidence contains a list, create:
+
+• one list recall card
+• additional cards testing individual items.
+
+GROUNDING
+
+If an "evidence" field exists, ground the flashcard in that text.
+
+Do NOT invent facts not supported by evidence.
 
 GOOD examples:
 
@@ -1108,14 +1136,28 @@ def semantic_dedupe(concepts, threshold=0.92):
     unique = []
 
     for c in concepts:
+
+        # create embedding if missing
+        if "embedding" not in c:
+            text = f"{c.get('name','')} {c.get('description','')}"
+            c["embedding"] = embed_text(text)
+
+        cvec = np.array(c["embedding"])
+
         keep = True
+
         for u in unique:
-            if cosine_sim(
-                np.array(c["embedding"]),
-                np.array(u["embedding"])
-            ) > threshold:
+
+            if "embedding" not in u:
+                text = f"{u.get('name','')} {u.get('description','')}"
+                u["embedding"] = embed_text(text)
+
+            uvec = np.array(u["embedding"])
+
+            if cosine_sim(cvec, uvec) > threshold:
                 keep = False
                 break
+
         if keep:
             unique.append(c)
 

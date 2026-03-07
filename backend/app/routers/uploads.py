@@ -1,7 +1,7 @@
 
 
 
-
+from app.models import Note
 from fastapi import APIRouter, UploadFile, File, Form, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
@@ -34,6 +34,17 @@ async def upload_note(
 ):
     content = await file.read()
     text = await extract_text(file.filename, content)
+    
+    # CREATE NOTE RECORD
+    note = Note(
+        user_id=user_id,
+        class_id=class_id,
+        title=file.filename,
+        content_json={"text": text}
+    )
+
+    db.add(note)
+    await db.flush()  # get note.id
 
     # 1️⃣ Extract concepts
     concepts = await extract_concepts_from_note(text)
@@ -61,6 +72,7 @@ async def upload_note(
             class_id=class_id,
             name=c["name"],
             description=c["description"],
+            evidence=c.get("evidence"),
             confidence=c.get("confidence", 0.5)
         )
 
@@ -68,17 +80,20 @@ async def upload_note(
         await db.flush()  # ⭐ get DB id immediately
         saved_concepts.append(concept)
 
-    # 3️⃣ Generate flashcards FROM saved concepts
+    # 3️⃣ Generate flashcards FROM ALL concepts at once
+
     all_flashcards = []
 
     for concept in saved_concepts:
-        cards = await generate_flashcards_from_concepts([
-            {
-                "name": concept.name,
-                "description": concept.description
-            }
-        ])
 
+        concept_payload = [{
+            "name": concept.name,
+            "description": concept.description,
+            "evidence": concept.evidence or concept.description
+        }]
+
+        cards = await generate_flashcards_from_concepts(concept_payload)
+    
         for fc in cards:
             all_flashcards.append((fc, concept))
 
@@ -88,7 +103,7 @@ async def upload_note(
         existing_res = await db.execute(
             select(Flashcard).where(
                 Flashcard.user_id == user_id,
-                Flashcard.class_id == class_id,
+                Flashcard.note_id == note.id,
                 Flashcard.question == fc["question"]
             )
         )
@@ -101,6 +116,7 @@ async def upload_note(
         card = Flashcard(
             user_id=user_id,
             class_id=class_id,
+            note_id=note.id,
             concept_id=concept.id,
             question=fc["question"],
             answer=fc["answer"]
@@ -129,6 +145,7 @@ async def upload_note(
     await db.commit()
 
     return {
+        "note_id": str(note.id),
         "filename": file.filename,
         "concepts_saved": len(saved_concepts),
         "flashcards_saved": len(all_flashcards)
