@@ -53,6 +53,10 @@ async def top_k_concepts(query: str, concepts: list, k=5):
  
 from jsonschema import validate, ValidationError
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+kimi_client = OpenAI(
+    api_key=os.getenv("MOONSHOT_API_KEY"),
+    base_url="https://api.moonshot.ai/v1"
+)
 def embed_text(text: str):
     resp = client.embeddings.create(
         model="text-embedding-3-small",
@@ -65,14 +69,32 @@ with open(SCHEMA_PATH) as f:
     QUESTION_SCHEMA = json.load(f)
     
 def safe_json_loads(s: str):
+
+    if not s:
+        return None
+
+    # Remove markdown code blocks like ```json ... ```
+    s = s.replace("```json", "")
+    s = s.replace("```", "")
+
+    # Remove whitespace
+    s = s.strip()
+
+    # Extract the first JSON object if extra text exists
+    start = s.find("{")
+    end = s.rfind("}")
+
+    if start != -1 and end != -1:
+        s = s[start:end+1]
+
     try:
         return json.loads(s)
+
     except Exception as e:
         print("\n⚠️ LLM JSON PARSE FAILED")
         print("RAW OUTPUT:\n", s)
         print("ERROR:", e, "\n")
         return None
-        
         
 # ================= BOOSTER =================
 
@@ -109,7 +131,7 @@ def booster_add_named_concepts(note_text: str, concepts: list):
     
     
 FORMULA_PATTERN = re.compile(
-    r"(=|Σ|∑|μ|σ|β|θ|λ|\bP\(|\bE\[)"
+    r"(=|Σ|∑|μ|σ|β|θ|λ|δ|∫|ln|log|\bP\(|\bE\[|\bVar|\bCov)"
 )
 
 # ========= ACRONYM BOOSTER =========
@@ -244,7 +266,79 @@ def booster_distributions(note_text: str, concepts: list):
             })
 
     return concepts
-        
+    
+    
+    
+IDENTITY_PATTERN = re.compile(
+    r"[a-zA-Zδλσμ]+\s*=\s*[^\n]{3,50}"
+)
+
+def booster_math_identities(note_text: str, concepts: list):
+
+    found = IDENTITY_PATTERN.findall(note_text)
+
+    existing = {c["name"] for c in concepts}
+
+    for expr in found:
+
+        clean = expr.strip()
+
+        snake = (
+            clean.lower()
+            .replace(" ", "_")
+            .replace("(", "")
+            .replace(")", "")
+        )
+
+        if snake not in existing:
+
+            concepts.append({
+                "name": snake[:60],
+                "description": f"Mathematical identity: {clean}",
+                "confidence": 0.8
+            })
+
+    return concepts
+    
+    
+DERIVATION_PATTERN = re.compile(
+    r"(E\[.*?\]|Var\(.*?\)|Cov\(.*?\)|f_?\{?[A-Za-z]+\+?[A-Za-z]*\}?\(.*?\))\s*=\s*[^\n]{3,80}"
+)
+
+def booster_math_derivations(note_text: str, concepts: list):
+
+    lines = note_text.split("\n")
+    existing = {c["name"] for c in concepts}
+
+    for line in lines:
+
+        if DERIVATION_PATTERN.search(line):
+
+            clean = line.strip()
+
+            if len(clean) < 6:
+                continue
+
+            snake = (
+                clean.lower()
+                .replace(" ", "_")
+                .replace("(", "")
+                .replace(")", "")
+                .replace("[", "")
+                .replace("]", "")
+            )
+
+            if snake not in existing:
+
+                concepts.append({
+                    "name": snake[:80],
+                    "description": f"Mathematical derivation or identity: {clean}",
+                    "confidence": 0.85
+                })
+
+    return concepts
+
+
 CONCEPT_PROMPT = """
 You are an expert educator building an EXAM-FOCUSED concept list.
 
@@ -697,14 +791,17 @@ def normalize_concept_name(name: str):
 
 async def extract_concepts_from_note(note_text: str):
     cleaned = clean_note_text(note_text)
-    resp = client.chat.completions.create(
-        model="gpt-4.1",
+
+    if not cleaned.strip():
+        return []
+    resp = kimi_client.chat.completions.create(
+        model="kimi-k2.5",
         messages=[
             {"role": "system", "content": CONCEPT_PROMPT},
 
             {"role": "user", "content": cleaned},
         ],
-        temperature=0.0,
+        
     )
     raw = resp.choices[0].message.content
     print("\n📄 LLM RAW RESPONSE:\n", raw)
@@ -815,13 +912,16 @@ async def extract_math_concepts_from_note(note_text: str):
 
     cleaned = clean_note_text(note_text)
 
-    resp = client.chat.completions.create(
-        model="gpt-4.1",
+    if not cleaned.strip():
+        return []
+
+    resp = kimi_client.chat.completions.create(
+        model="kimi-k2.5",
         messages=[
             {"role": "system", "content": MATH_CONCEPT_PROMPT},
             {"role": "user", "content": cleaned},
         ],
-        temperature=0.0,
+        
     )
 
     raw = resp.choices[0].message.content
@@ -845,6 +945,8 @@ async def extract_math_concepts_from_note(note_text: str):
     concepts = grounded
 
     concepts = booster_math_formulas(cleaned, concepts)
+    concepts = booster_math_identities(cleaned, concepts)
+    concepts = booster_math_derivations(cleaned, concepts)
     concepts = booster_distributions(cleaned, concepts)
     concepts = booster_add_formula_concepts(cleaned, concepts)
     concepts = booster_add_named_concepts(cleaned, concepts)
@@ -1131,6 +1233,287 @@ Return JSON ONLY:
 
     return list(unique.values())
 
+async def generate_math_flashcards_from_concepts(concepts: list[dict]):
+
+    resp = client.chat.completions.create(
+        model="gpt-4.1",
+        messages=[
+            {
+                "role": "system",
+                "content": """
+You are an expert mathematician, statistician, actuarial scientist, and learning scientist.
+
+Your task is to generate HIGH-QUALITY MATHEMATICAL FLASHCARDS that help students master
+mathematical reasoning, proof logic, formula selection, and problem-solving strategies.
+
+These flashcards must support university-level mathematics including:
+
+• calculus
+• advanced calculus
+• probability theory
+• mathematical statistics
+• discrete mathematics
+• combinatorics
+• graph theory
+• linear algebra
+• differential equations
+• optimization
+• actuarial mathematics
+
+--------------------------------
+CORE LEARNING PRINCIPLE
+--------------------------------
+
+Follow the **Minimum Information Principle** used by Anki.
+
+Each flashcard must test ONE meaningful mathematical idea.
+
+Avoid splitting concepts into trivial fragments.
+
+Prefer one strong conceptual card over several weak cards.
+
+--------------------------------
+CARD TYPES
+--------------------------------
+
+Across the deck maintain approximately:
+
+30% Formula Recall
+25% Formula Selection
+20% Concept Understanding
+15% Pattern Recognition
+5% Method Identification
+5% Common Pitfall
+
+--------------------------------
+PROOF AND LOGIC CARDS
+--------------------------------
+
+If the concept involves a proof, theorem, or logical structure,
+generate cards that test:
+
+• key proof steps
+• assumptions required
+• why the result holds
+• common logical mistakes
+
+Example:
+
+Q: What key assumption allows the Central Limit Theorem to apply?
+A: Independent and identically distributed variables with finite variance.
+
+--------------------------------
+DISCRETE MATH RULE
+--------------------------------
+
+If concepts involve:
+
+• combinatorics
+• recurrence relations
+• graph structures
+• algorithmic complexity
+• logical inference
+
+Create flashcards that test:
+
+• reasoning steps
+• structural properties
+• interpretation of results
+
+--------------------------------
+FLASHCARD TYPES EXPLAINED
+--------------------------------
+
+1️⃣ Formula Recall
+
+Test recognition of important formulas.
+
+Example:
+Q: What is the variance of a Poisson distribution with parameter λ?
+A: Var(X) = λ
+
+---
+
+2️⃣ Formula Selection
+
+Test when a formula or method should be used.
+
+Example:
+Q: When should integration by parts be used?
+A: When integrating a product of functions where one simplifies when differentiated.
+
+---
+
+3️⃣ Pattern Recognition
+
+Test identifying distributions, structures, or identities.
+
+Example:
+Q: What distribution has density proportional to q^(a−1)(1−q)^(b−1)?
+A: Beta distribution.
+
+---
+
+4️⃣ Concept Understanding
+
+Test interpretation of mathematical results.
+
+Example:
+Q: What does the parameter λ represent in a Poisson distribution?
+A: The expected number of events per interval.
+
+---
+
+5️⃣ Method Identification
+
+Test which mathematical technique solves a problem.
+
+Example:
+Q: What technique is commonly used to compute the distribution of a sum of independent variables?
+A: Convolution.
+
+---
+
+6️⃣ Common Pitfall
+
+Test common mistakes students make.
+
+Example:
+Q: What mistake do students often make when applying the Central Limit Theorem?
+A: Forgetting that the theorem applies to sample means or sums, not individual observations.
+
+--------------------------------
+CARD GENERATION RULES
+--------------------------------
+
+Generate between **2 and 4 flashcards per concept**.
+
+Avoid repeating the same formula or concept using slightly different wording.
+
+Prefer deeper conceptual questions rather than trivial recall.
+
+Answers must be **short (1–2 lines)**.
+
+--------------------------------
+VARIABLE INTERPRETATION RULE
+--------------------------------
+
+If a formula appears, try to generate at least one card explaining:
+
+• what the formula represents
+• what each key variable means
+• when the formula should be used
+
+--------------------------------
+FORMULA HANDLING RULE
+--------------------------------
+
+If a formula appears in the concept:
+
+Create flashcards testing:
+
+• formula recognition
+• variable meaning
+• conditions of validity
+• typical application scenarios
+
+--------------------------------
+PATTERN RECOGNITION RULE
+--------------------------------
+
+If expressions resemble known mathematical structures such as:
+
+q^(a−1)(1−q)^(b−1)
+
+or
+
+e^(−λx)
+
+or
+
+Σ Xi
+
+Create recognition flashcards that test identification of the distribution or concept.
+
+--------------------------------
+GROUNDING RULE
+--------------------------------
+
+If a concept contains an **"evidence" field**, use that evidence
+to ground the flashcard.
+
+Do NOT invent formulas or theorems not supported by the concept list.
+
+Flashcards must be grounded in the extracted concepts.
+
+--------------------------------
+GOOD FLASHCARD EXAMPLES
+--------------------------------
+
+Good:
+
+Q: What distribution has density proportional to q^(a−1)(1−q)^(b−1)?
+A: Beta distribution.
+
+Q: When should the convolution formula be used?
+A: When finding the distribution of the sum of independent random variables.
+
+Q: What does λ represent in a Poisson distribution?
+A: The expected number of events per interval.
+
+--------------------------------
+BAD FLASHCARD EXAMPLES
+--------------------------------
+
+Bad:
+
+Q: What is mathematics?
+A: A field of study.
+
+Q: What is a distribution?
+A: Something describing probability.
+
+--------------------------------
+OUTPUT FORMAT
+--------------------------------
+
+Return JSON ONLY:
+
+{
+ "flashcards":[
+  {
+   "question":"...",
+   "answer":"...",
+   "confidence":0.9
+  }
+ ]
+}
+"""
+            },
+            {
+                "role": "user",
+                "content": json.dumps(concepts)
+            }
+        ],
+        temperature=0.2,
+        max_tokens=2000
+    )
+
+    parsed = safe_json_loads(resp.choices[0].message.content)
+
+    if not parsed:
+        return []
+
+    cards = parsed.get("flashcards", [])
+
+    unique = {}
+
+    for c in cards:
+        key = c["question"].strip().lower()
+        unique[key] = c
+
+    return list(unique.values())
+    
 def semantic_dedupe(concepts, threshold=0.92):
 
     unique = []

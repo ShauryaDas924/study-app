@@ -15,7 +15,10 @@ from app.services.llm import (
     extract_concepts_from_note,
     extract_math_concepts_from_note
 )
-from app.services.llm import generate_flashcards_from_concepts
+from app.services.llm import (
+    generate_flashcards_from_concepts,
+    generate_math_flashcards_from_concepts
+)
 from datetime import timedelta
 
 from datetime import datetime
@@ -107,7 +110,11 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
     # -------- SMART FLASHCARD GENERATION --------
 
     if concepts:
-        flashcards = await generate_flashcards_from_concepts(concepts)
+
+        if mode == "math":
+            flashcards = await generate_math_flashcards_from_concepts(concepts)
+        else:
+            flashcards = await generate_flashcards_from_concepts(concepts)
 
         # get created concept objects
         concept_lookup = {}

@@ -53,6 +53,33 @@ def extract_from_pdf(file_bytes: bytes) -> str:
 
 
 # ------------------------
+# PDF (MATH MODE OCR)
+# ------------------------
+async def extract_from_pdf_math(file_bytes: bytes) -> str:
+
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    text = ""
+
+    for page in doc:
+
+        page_text = page.get_text()
+
+        # If page likely contains formulas or OCR artifacts
+        if len(page_text) < 200 or "  " in page_text:
+
+            pix = page.get_pixmap(dpi=300)
+            img_bytes = pix.tobytes("png")
+
+            vision_text = await extract_from_image(img_bytes)
+
+            text += vision_text + "\n"
+
+        else:
+            text += page_text + "\n"
+
+    return text
+
+# ------------------------
 # PPT
 # ------------------------
 def extract_from_ppt(file_bytes: bytes) -> str:
@@ -70,7 +97,8 @@ def extract_from_ppt(file_bytes: bytes) -> str:
 # ------------------------
 # MAIN ROUTER FUNCTION
 # ------------------------
-async def extract_text(filename: str, file_bytes: bytes) -> str:
+async def extract_text(filename: str, file_bytes: bytes, math_mode: bool = False) -> str:
+    print("MATH MODE:", math_mode)
     filename = filename.lower()
 
     if filename.endswith((".png", ".jpg", ".jpeg")):
@@ -80,6 +108,10 @@ async def extract_text(filename: str, file_bytes: bytes) -> str:
             return "Vision disabled"
 
     if filename.endswith(".pdf"):
+
+        if math_mode:
+            return await extract_from_pdf_math(file_bytes)
+
         return extract_from_pdf(file_bytes)
 
     if filename.endswith((".pptx", ".ppt")):
