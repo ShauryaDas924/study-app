@@ -18,6 +18,15 @@ export default function HomeworkPage(){
   >([]);
 const [questions,setQuestions] = useState<string[]>([]);
 const [qIndex,setQIndex] = useState(0);
+function formatTutorText(text:string){
+
+  return text
+    .replace(/Concept used:/g,"### 🧠 Concept Used")
+    .replace(/Definition:/g,"**Definition**")
+    .replace(/When to use:/g,"**When to use**")
+    .replace(/Common pitfall:/g,"⚠️ **Common pitfall**")
+    .replace(/Step (\d+):/g,"### Step $1")
+}
   // ================= ASK =================
   async function ask(text?:string){
 
@@ -104,7 +113,7 @@ const [qIndex,setQIndex] = useState(0);
 
       {/* INPUT */}
       <textarea
-        className="w-full border p-3 rounded"
+className="w-full border shadow-sm p-3 rounded-lg"
         rows={4}
         placeholder="Ask something..."
         value={q}
@@ -177,11 +186,11 @@ Solve This Question
       {/* CHAT */}
        {questions.length>0 && (
 
-<div className="border p-3 rounded bg-gray-50">
+<div className="border shadow-sm p-5 rounded-xl bg-green-50 max-w-3xl">
 
-<b>
+<div className="font-semibold text-green-800 mb-2">
 Question {qIndex+1} / {questions.length}
-</b>
+</div>
 
 <ReactMarkdown>
 {questions[qIndex]}
@@ -190,20 +199,45 @@ Question {qIndex+1} / {questions.length}
 </div>
 
 )}
-      <div className="space-y-3">
+      <div className="space-y-4 max-w-3xl max-h-[600px] overflow-y-auto pr-2">
 
         {messages.map((m,i)=>(
           <div key={i} className={m.role==="user"?"text-right":"text-left"}>
-            <div className={
-              m.role==="user"
-                ?"inline-block bg-green-200 p-3 rounded"
-                :"inline-block bg-white border p-3 rounded prose max-w-none"
-            }>
+            <div
+  className={
+    m.role==="user"
+      ?"inline-block bg-green-200 p-3 rounded-lg max-w-xl"
+      :"inline-block bg-white border shadow-sm p-4 rounded-xl prose max-w-none"
+  }
+>
               <ReactMarkdown
-                remarkPlugins={[remarkMath]}
-                rehypePlugins={[rehypeKatex]}
-              >
-                {m.content}
+  remarkPlugins={[remarkMath]}
+  rehypePlugins={[rehypeKatex]}
+  components={{
+  code({children, className, ...props}) {
+
+    const isInline = !className
+
+    return isInline
+      ? (
+        <code className="bg-gray-100 px-1 rounded">
+          {children}
+        </code>
+      )
+      : (
+        <pre className="bg-gray-100 p-3 rounded overflow-x-auto text-sm">
+          <code {...props}>
+            {children}
+          </code>
+        </pre>
+      )
+  }
+}}
+>
+                {m.role==="assistant"
+  ? formatTutorText(m.content)
+  : m.content
+}
               </ReactMarkdown>
             </div>
           </div>

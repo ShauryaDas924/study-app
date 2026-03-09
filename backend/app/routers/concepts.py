@@ -9,6 +9,7 @@ from sqlalchemy import select
 from uuid import UUID
 from app.services.llm import embed_text
 from app.db import get_db
+from app.services.llm import client
 from app.models import Note, Concept, NoteConcept, Flashcard, FlashcardState, Mastery
 from app.services.auth import get_current_user_id
 from app.services.llm import (
@@ -76,14 +77,50 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
             db.add(link)
             continue
 
+        # Generate simple pitfalls automatically
+        pitfall_resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role":"system",
+                    "content":"List one common mistake students make with this concept."
+                },
+                {
+                    "role":"user",
+                    "content":f"{c['name']} : {c.get('description','')}"
+                }
+            ],
+            temperature=0.3
+        )
+
+        pitfall_text = pitfall_resp.choices[0].message.content.strip()
+            
+        # Generate when_to_use explanation
+        when_resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role":"system",
+                    "content":"Explain when this concept should be used when solving problems. One short sentence."
+                },
+                {
+                    "role":"user",
+                    "content":f"{c['name']} : {c.get('description','')}"
+                }
+            ],
+            temperature=0.3
+        )
+
+        when_text = when_resp.choices[0].message.content.strip()
+        
         concept = Concept(
             user_id=note.user_id,
             class_id=note.class_id,
             name=c["name"],
             description=c.get("description"),
             definition=c.get("description"),
-            when_to_use=None,
-            pitfalls=None,
+            when_to_use=when_text,
+            pitfalls=pitfall_text,
             confidence=float(c.get("confidence", 0.5)),
             evidence=c.get("evidence")
         )

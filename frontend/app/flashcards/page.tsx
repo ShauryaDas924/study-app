@@ -17,7 +17,16 @@ type ApiFlashcard = {
   confidence?: number;
 };
 
-type Mode = "normal" | "hard" | "medium";
+type Mode =
+  | "normal"
+  | "hard"
+  | "medium"
+  | "speed"
+  | "exam"
+  | "streak"
+  | "weakness"
+  | "reverse"
+  | "survival";
 
 type SessionPayload = {
   cards: Card[];
@@ -63,7 +72,14 @@ export default function FlashcardsPage() {
   const [hardPile, setHardPile] = useState<Card[]>([]);
   const [mediumPile, setMediumPile] = useState<Card[]>([]);
   const [mode, setMode] = useState<Mode>("normal");
+// NEW MODE STATES
+const [streak, setStreak] = useState(0);
+const [bestStreak, setBestStreak] = useState(0);
 
+const [lives, setLives] = useState(3);
+
+const [speedTime, setSpeedTime] = useState(60);
+const [speedScore, setSpeedScore] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -208,6 +224,61 @@ export default function FlashcardsPage() {
     setCards([...cards.slice(0, i), ...shuffled]);
   }
 
+function startSpeedMode() {
+  setMode("speed");
+setCards(shuffle(cards));
+  setSpeedScore(0);
+  setSpeedTime(60);
+  setI(0);
+  setShow(false);
+
+  const timer = setInterval(() => {
+    setSpeedTime((t) => {
+      if (t <= 1) {
+        clearInterval(timer);
+        alert(`⚡ Speed round finished!`);
+        setMode("normal");
+        return 0;
+      }
+      return t - 1;
+    });
+  }, 1000);
+}
+
+function startExamMode() {
+  const examCards = shuffle(cards).slice(0, 25);
+setHardPile([]);
+setMediumPile([]);
+  setCards(examCards);
+  setI(0);
+  setMode("exam");
+  setShow(false);
+}
+
+function startWeaknessMode() {
+  const weak = cards.filter((c) => c.confidence < 0.65);
+  setCards(shuffle(weak));
+  setMode("weakness");
+  setI(0);
+  setShow(false);
+}
+
+function startSurvivalMode() {
+  setMode("survival");
+  setLives(3);
+  setI(0);
+}
+function returnToNormalMode() {
+  setMode("normal");
+  setI(0);
+  setShow(false);
+
+  // reset special mode states
+  setStreak(0);
+  setLives(3);
+  setSpeedScore(0);
+}
+
   function clearSession() {
     if (!sessionKey) return;
     localStorage.removeItem(sessionKey);
@@ -224,6 +295,36 @@ export default function FlashcardsPage() {
 
   function grade(level: "hard" | "medium" | "easy") {
     const current = cards[i];
+    // STREAK MODE
+if (mode === "streak") {
+  if (level === "easy") {
+    const newStreak = streak + 1;
+    setStreak(newStreak);
+    setBestStreak(Math.max(bestStreak, newStreak));
+  } else {
+    setStreak(0);
+  }
+}
+
+// SURVIVAL MODE
+if (mode === "survival") {
+  if (level !== "easy") {
+    const newLives = lives - 1;
+    setLives(newLives);
+
+    if (newLives <= 0) {
+      alert("💀 Game Over");
+      setMode("normal");
+      setLives(3);
+      return;
+    }
+  }
+}
+
+// SPEED MODE SCORE
+if (mode === "speed" && level === "easy") {
+  setSpeedScore((s) => s + 1);
+}
 
     if (level === "hard") setHardPile((p) => [...p, current]);
     if (level === "medium") setMediumPile((p) => [...p, current]);
@@ -275,6 +376,44 @@ export default function FlashcardsPage() {
     finishSession();
   }
 
+function answerCard(result: "correct" | "wrong" | "skip") {
+  const current = cards[i];
+
+  if (mode === "speed" && result === "correct") {
+    setSpeedScore((s) => s + 1);
+  }
+
+  if (mode === "streak") {
+    if (result === "correct") {
+      const newStreak = streak + 1;
+      setStreak(newStreak);
+      setBestStreak(Math.max(bestStreak, newStreak));
+    } else {
+      setStreak(0);
+    }
+  }
+
+  if (mode === "survival" && result === "wrong") {
+    const newLives = lives - 1;
+    setLives(newLives);
+
+    if (newLives <= 0) {
+      alert("💀 Game Over");
+      setMode("normal");
+      setLives(3);
+      return;
+    }
+  }
+
+  setShow(false);
+
+  if (i + 1 < cards.length) {
+    setI(i + 1);
+    return;
+  }
+
+  finishSession();
+}
   async function exportCSV() {
     if (!noteId) return;
 
@@ -355,7 +494,11 @@ export default function FlashcardsPage() {
   }
 
   const c = cards[Math.min(i, cards.length - 1)];
-
+const isGameMode =
+  mode === "speed" ||
+  mode === "streak" ||
+  mode === "survival" ||
+  mode === "exam";
   return (
     <div className="p-8 max-w-xl mx-auto space-y-6">
       <h1 className="text-2xl font-semibold">Flashcard Study</h1>
@@ -376,6 +519,23 @@ export default function FlashcardsPage() {
       </select>
 
       <div className="flex gap-4 text-sm">
+{mode === "streak" && (
+  <div className="text-orange-600 font-medium">
+    🔥 Streak: {streak} | Best: {bestStreak}
+  </div>
+)}
+
+{mode === "survival" && (
+  <div className="text-red-600 font-medium">
+    Lives: {"❤️".repeat(lives)}
+  </div>
+)}
+
+{mode === "speed" && (
+  <div className="text-pink-600 font-medium">
+    ⏱ {speedTime}s | Score: {speedScore}
+  </div>
+)}
         <button
           disabled={!hardPile.length}
           onClick={() => {
@@ -407,7 +567,13 @@ export default function FlashcardsPage() {
         <div className="bg-gray-100 px-3 py-1 rounded">Mode: {mode}</div>
       </div>
 
-      <div className="flex gap-3">
+      <div className="flex gap-3 flex-wrap">
+<button
+  onClick={returnToNormalMode}
+  className="px-3 py-1 bg-gray-300 text-black rounded text-sm"
+>
+🏠 Normal
+</button>
         <button onClick={reshuffleRemaining} className="px-3 py-1 bg-purple-600 text-white rounded text-sm">
           🔀 Shuffle
         </button>
@@ -415,6 +581,48 @@ export default function FlashcardsPage() {
         <button onClick={clearSession} className="px-3 py-1 bg-gray-600 text-white rounded text-sm">
           ♻️ Reset
         </button>
+<button
+  onClick={startSpeedMode}
+  className="px-3 py-1 bg-pink-600 text-white rounded text-sm"
+>
+⚡ Speed
+</button>
+
+<button
+  onClick={startExamMode}
+  className="px-3 py-1 bg-indigo-600 text-white rounded text-sm"
+>
+📝 Exam
+</button>
+
+<button
+  onClick={() => setMode("streak")}
+  className="px-3 py-1 bg-orange-600 text-white rounded text-sm"
+>
+🔥 Streak
+</button>
+
+<button
+  onClick={() => setMode("reverse")}
+  className="px-3 py-1 bg-teal-600 text-white rounded text-sm"
+>
+🔄 Reverse
+</button>
+
+<button
+  onClick={startWeaknessMode}
+  className="px-3 py-1 bg-red-700 text-white rounded text-sm"
+>
+🧠 Weakness
+</button>
+
+<button
+  onClick={startSurvivalMode}
+  className="px-3 py-1 bg-black text-white rounded text-sm"
+>
+💀 Survival
+</button>
+
 
         <button onClick={exportCSV} className="px-3 py-1 bg-blue-700 text-white rounded text-sm">
           ⬇️ Export CSV
@@ -434,7 +642,9 @@ export default function FlashcardsPage() {
           {Math.round(c.confidence * 100)}%
         </div>
 
-        <div className="text-lg font-medium">{c.question}</div>
+        <div className="text-lg font-medium">
+  {mode === "reverse" ? c.answer : c.question}
+</div>
 
         {!show ? (
           <button onClick={() => setShow(true)} className="mt-6 px-4 py-2 rounded bg-blue-600 text-white">
@@ -443,24 +653,60 @@ export default function FlashcardsPage() {
         ) : (
           <>
             <div className="mt-4 text-green-700">
-              {c.answer && !c.answer.toLowerCase().includes("named concept found")
-                ? c.answer
-                : "No answer extracted from notes yet."}
+              {mode === "reverse"
+  ? c.question
+  : c.answer && !c.answer.toLowerCase().includes("named concept found")
+  ? c.answer
+  : "No answer extracted from notes yet."}
             </div>
 
-            <div className="flex gap-3 mt-6">
-              <button onClick={() => grade("hard")} className="px-3 py-2 bg-red-500 text-white rounded">
-                Hard
-              </button>
+           {isGameMode ? (
+  <div className="flex gap-3 mt-6">
+    <button
+      onClick={() => answerCard("correct")}
+      className="px-3 py-2 bg-green-600 text-white rounded"
+    >
+      Correct
+    </button>
 
-              <button onClick={() => grade("medium")} className="px-3 py-2 bg-yellow-500 text-white rounded">
-                Medium
-              </button>
+    <button
+      onClick={() => answerCard("wrong")}
+      className="px-3 py-2 bg-red-500 text-white rounded"
+    >
+      Wrong
+    </button>
 
-              <button onClick={() => grade("easy")} className="px-3 py-2 bg-green-600 text-white rounded">
-                Easy
-              </button>
-            </div>
+    <button
+      onClick={() => answerCard("skip")}
+      className="px-3 py-2 bg-gray-500 text-white rounded"
+    >
+      Skip
+    </button>
+  </div>
+) : (
+  <div className="flex gap-3 mt-6">
+    <button
+      onClick={() => grade("hard")}
+      className="px-3 py-2 bg-red-500 text-white rounded"
+    >
+      Hard
+    </button>
+
+    <button
+      onClick={() => grade("medium")}
+      className="px-3 py-2 bg-yellow-500 text-white rounded"
+    >
+      Medium
+    </button>
+
+    <button
+      onClick={() => grade("easy")}
+      className="px-3 py-2 bg-green-600 text-white rounded"
+    >
+      Easy
+    </button>
+  </div>
+)}
           </>
         )}
       </div>
