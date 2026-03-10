@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useStore } from "@/store/useStore";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
@@ -16,17 +16,38 @@ export default function HomeworkPage(){
   const [messages,setMessages] = useState<
     {role:"user"|"assistant",content:string}[]
   >([]);
-const [questions,setQuestions] = useState<string[]>([]);
-const [qIndex,setQIndex] = useState(0);
-function formatTutorText(text:string){
 
-  return text
-    .replace(/Concept used:/g,"### 🧠 Concept Used")
-    .replace(/Definition:/g,"**Definition**")
-    .replace(/When to use:/g,"**When to use**")
-    .replace(/Common pitfall:/g,"⚠️ **Common pitfall**")
-    .replace(/Step (\d+):/g,"### Step $1")
+  const [questions,setQuestions] = useState<string[]>([]);
+  const [qIndex,setQIndex] = useState(0);
+
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(()=>{
+    chatEndRef.current?.scrollIntoView({behavior:"smooth"});
+  },[messages]);
+
+function formatTutorText(text: string) {
+
+  let t = text
+
+  // Fix LaTeX delimiters
+  t = t
+    .replace(/\\\[/g, "$$")
+    .replace(/\\\]/g, "$$")
+    .replace(/\\\(/g, "$")
+    .replace(/\\\)/g, "$")
+
+  // Pretty headings
+  t = t
+    .replace(/Concept used:/g, "### 🧠 Concept Used")
+    .replace(/Definition:/g, "**Definition**")
+    .replace(/When to use:/g, "**When to use**")
+    .replace(/Common pitfall:/g, "⚠️ **Common pitfall**")
+    .replace(/Step (\d+):/g, "### Step $1")
+
+  return t
 }
+
   // ================= ASK =================
   async function ask(text?:string){
 
@@ -68,28 +89,28 @@ function formatTutorText(text:string){
   // ================= FILE UPLOAD =================
   async function upload(e:any){
 
-  if(!classId) return;
+    if(!classId) return;
 
-  const file = e.target.files[0];
-  if(!file) return;
+    const file = e.target.files[0];
+    if(!file) return;
 
-  const form = new FormData();
-  form.append("file",file);
+    const form = new FormData();
+    form.append("file",file);
 
-  setLoading(true);
+    setLoading(true);
 
-  const res = await fetch(
-    `http://localhost:8000/homework/upload-help?class_id=${classId}`,
-    {method:"POST",body:form}
-  );
+    const res = await fetch(
+      `http://localhost:8000/homework/upload-help?class_id=${classId}`,
+      {method:"POST",body:form}
+    );
 
-  const data = await res.json();
+    const data = await res.json();
 
-  setQuestions(data.questions || []);
-  setQIndex(0);
+    setQuestions(data.questions || []);
+    setQIndex(0);
 
-  setLoading(false);
-}
+    setLoading(false);
+  }
 
   // ================= CLEAR CHAT =================
   async function clearChat(){
@@ -105,143 +126,157 @@ function formatTutorText(text:string){
   }
 
   return(
-    <div className="space-y-4">
+   <div className="flex flex-col h-[calc(100vh-100px)] overflow-hidden">
 
-      <h1 className="text-2xl font-semibold">
+      <h1 className="text-2xl font-semibold mb-4">
         Homework Helper
       </h1>
 
-      {/* INPUT */}
-      <textarea
-className="w-full border shadow-sm p-3 rounded-lg"
-        rows={4}
-        placeholder="Ask something..."
-        value={q}
-        onChange={e=>setQ(e.target.value)}
-      />
+      {/* QUESTION PREVIEW */}
+      {questions.length>0 && (
 
-      {/* BUTTONS */}
-      <div className="flex gap-3 flex-wrap">
-	<button
-onClick={()=>{
-  if(qIndex>0) setQIndex(qIndex-1)
-}}
-className="bg-gray-500 text-white px-3 py-2 rounded"
->
-Prev
-</button>
+        <div className="border shadow-sm p-5 rounded-xl bg-green-50 max-w-3xl mb-4">
 
-<button
-onClick={()=>{
-  if(qIndex<questions.length-1)
-    setQIndex(qIndex+1)
-}}
-className="bg-gray-500 text-white px-3 py-2 rounded"
->
-Next
-</button>
+          <div className="font-semibold text-green-800 mb-2">
+            Question {qIndex+1} / {questions.length}
+          </div>
 
-<button
-onClick={()=>ask(questions[qIndex])}
-className="bg-purple-600 text-white px-3 py-2 rounded"
->
-Solve This Question
-</button>
-        <button
-          disabled={!classId || loading}
-          onClick={()=>ask()}
-          className="bg-green-500 text-white px-4 py-2 rounded"
-        >
-          Ask
-        </button>
+          <ReactMarkdown>
+            {questions[qIndex]}
+          </ReactMarkdown>
 
-        <button
-          disabled={loading}
-          onClick={()=>ask("hint")}
-          className="bg-yellow-500 text-white px-3 py-2 rounded"
-        >
-          Hint
-        </button>
+        </div>
 
-        <button
-          disabled={loading}
-          onClick={()=>ask("next step")}
-          className="bg-blue-500 text-white px-3 py-2 rounded"
-        >
-          Next Step
-        </button>
+      )}
 
-        <input type="file" onChange={upload}/>
-
-        <button
-          onClick={clearChat}
-          className="bg-red-500 text-white px-3 py-2 rounded"
-        >
-          Clear Chat
-        </button>
-      </div>
-
-      {loading && <div>Thinking...</div>}
-
-      {/* CHAT */}
-       {questions.length>0 && (
-
-<div className="border shadow-sm p-5 rounded-xl bg-green-50 max-w-3xl">
-
-<div className="font-semibold text-green-800 mb-2">
-Question {qIndex+1} / {questions.length}
-</div>
-
-<ReactMarkdown>
-{questions[qIndex]}
-</ReactMarkdown>
-
-</div>
-
-)}
-      <div className="space-y-4 max-w-3xl max-h-[600px] overflow-y-auto pr-2">
+      {/* CHAT WINDOW */}
+     <div className="space-y-4 max-w-3xl overflow-y-auto flex-1 pr-2 min-h-0">
 
         {messages.map((m,i)=>(
           <div key={i} className={m.role==="user"?"text-right":"text-left"}>
+
             <div
-  className={
-    m.role==="user"
-      ?"inline-block bg-green-200 p-3 rounded-lg max-w-xl"
-      :"inline-block bg-white border shadow-sm p-4 rounded-xl prose max-w-none"
-  }
->
+              className={
+                m.role==="user"
+                  ?"inline-block bg-green-200 p-3 rounded-lg max-w-xl"
+                  :"inline-block bg-white border shadow-sm p-4 rounded-xl prose max-w-none"
+              }
+            >
+
               <ReactMarkdown
-  remarkPlugins={[remarkMath]}
-  rehypePlugins={[rehypeKatex]}
-  components={{
-  code({children, className, ...props}) {
+                remarkPlugins={[remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={{
+                  code({children, className, ...props}) {
 
-    const isInline = !className
+                    const isInline = !className
 
-    return isInline
-      ? (
-        <code className="bg-gray-100 px-1 rounded">
-          {children}
-        </code>
-      )
-      : (
-        <pre className="bg-gray-100 p-3 rounded overflow-x-auto text-sm">
-          <code {...props}>
-            {children}
-          </code>
-        </pre>
-      )
-  }
-}}
->
+                    return isInline
+                      ? (
+                        <code className="bg-gray-100 px-1 rounded">
+                          {children}
+                        </code>
+                      )
+                      : (
+                        <pre className="bg-gray-100 p-3 rounded overflow-x-auto text-sm">
+                          <code {...props}>
+                            {children}
+                          </code>
+                        </pre>
+                      )
+                  }
+                }}
+              >
                 {m.role==="assistant"
-  ? formatTutorText(m.content)
-  : m.content
-}
+                  ? formatTutorText(m.content)
+                  : m.content
+                }
               </ReactMarkdown>
+
             </div>
+
           </div>
         ))}
+
+        <div ref={chatEndRef}></div>
+
+      </div>
+
+      {loading && <div className="mt-2">Thinking...</div>}
+
+      {/* INPUT BAR (BOTTOM) */}
+      <div className="border-t pt-3 mt-3 bg-white sticky bottom-0">
+
+        <textarea
+          className="w-full border shadow-sm p-3 rounded-lg"
+          rows={3}
+          placeholder="Ask something..."
+          value={q}
+          onChange={e=>setQ(e.target.value)}
+        />
+
+        <div className="flex gap-3 flex-wrap mt-2">
+
+          <button
+            onClick={()=>{
+              if(qIndex>0) setQIndex(qIndex-1)
+            }}
+            className="bg-gray-500 text-white px-3 py-2 rounded"
+          >
+            Prev
+          </button>
+
+          <button
+            onClick={()=>{
+              if(qIndex<questions.length-1)
+                setQIndex(qIndex+1)
+            }}
+            className="bg-gray-500 text-white px-3 py-2 rounded"
+          >
+            Next
+          </button>
+
+          <button
+            onClick={()=>ask(questions[qIndex])}
+            className="bg-purple-600 text-white px-3 py-2 rounded"
+          >
+            Solve This Question
+          </button>
+
+          <button
+            disabled={!classId || loading}
+            onClick={()=>ask()}
+            className="bg-green-500 text-white px-4 py-2 rounded"
+          >
+            Ask
+          </button>
+
+          <button
+            disabled={loading}
+            onClick={()=>ask("hint")}
+            className="bg-yellow-500 text-white px-3 py-2 rounded"
+          >
+            Hint
+          </button>
+
+          <button
+            disabled={loading}
+            onClick={()=>ask("next step")}
+            className="bg-blue-500 text-white px-3 py-2 rounded"
+          >
+            Next Step
+          </button>
+
+          <input type="file" onChange={upload}/>
+
+          <button
+            onClick={clearChat}
+            className="bg-red-500 text-white px-3 py-2 rounded"
+          >
+            Clear Chat
+          </button>
+
+        </div>
 
       </div>
 

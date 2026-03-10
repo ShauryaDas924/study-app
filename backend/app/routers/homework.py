@@ -58,7 +58,7 @@ async def homework_help(
     top_concepts = await top_k_concepts(
         body.question,
         concepts,
-        k=5
+        k=3
     )
 
     context = "\n\n".join([
@@ -97,24 +97,33 @@ async def homework_help(
 
         for c in top_concepts:
 
+            # try to load mastery row
             m = await db.get(
                 Mastery,
                 {"user_id": current_user_id, "concept_id": c.id}
             )
-
-            if m:
-
-                # incorrect attempt → update mastery using Bayesian model
-                new_mastery = update_mastery_value(
-                    mastery=m.mastery_prob,
-                    correct=False,
-                    difficulty=3,      # neutral difficulty
-                    confidence=2,      # low confidence assumption
-                    time_spent=30      # placeholder
+        
+            # create if it doesn't exist
+            if not m:
+                m = Mastery(
+                    user_id=current_user_id,
+                    concept_id=c.id,
+                    mastery_prob=0.35
                 )
+                db.add(m)
+                await db.flush()
 
-                m.mastery_prob = new_mastery
+            # update mastery using Bayesian model
+            new_mastery = update_mastery_value(
+                mastery=m.mastery_prob,
+                correct=False,
+                difficulty=3,
+                confidence=2,
+                time_spent=30
+            )
 
+            m.mastery_prob = new_mastery
+    
         db.add(ChatMemory(
             user_id=current_user_id,
             class_id=class_uuid,
@@ -184,35 +193,41 @@ async def homework_help(
 
             Before solving, first identify the method or concept required for the problem.
 
-            Structure your reasoning as:
+            TEACHING FLOW:
 
-            Step 0: Identify the concept or method needed to solve the problem.
-            Step 1: Explain why that concept applies.
-            Step 2: Break the solution into logical steps.
-            Step 3: Apply formulas, reasoning, or algorithms step-by-step.
+            Think like a great professor helping a student understand.
 
-            When applying a concept, begin with:
+            Your reasoning should be structured internally,
+            but your explanation should feel natural and conversational.
 
-            Concept used: <concept_name>
+            When solving a problem, generally follow this flow:
 
-            Then connect the reasoning to:
-    
-            1. Definition — what the concept means
-            2. When to use — why it applies to this problem
-            3. Common pitfall — a mistake students often make
+            1. Identify the key concept or idea involved.
+            2. Explain the intuition behind the idea in simple language.
+            3. Show the structure of the problem (timeline, cases, diagram, etc.).
+            4. Introduce the formula or rule being used.
+            5. Apply the reasoning step-by-step.
 
-            Example structure:
+            IMPORTANT:
 
-            Concept used: Law of Total Expectation
+            Do NOT always label steps like "Step 1", "Step 2".
 
-            Definition:
-            The expected value of a variable computed by conditioning on another variable.
+            Only use explicit steps when it genuinely helps clarity.
 
-            When to use:
-            When a random variable depends on several possible cases.
+            Prefer a natural explanation style:
+            idea → structure → formula → reasoning.
 
-            Common pitfall:
-            Students forget to weight the conditional expectations by their probabilities.
+            CONCEPT USAGE:
+
+            When a concept is relevant, briefly mention it and connect it to the reasoning.
+
+            You may explain:
+            • what the concept means
+            • why it applies here
+            • a common mistake students make
+
+            Do not force a rigid "Definition / When to use / Pitfall" structure.
+            Explain concepts naturally as part of the reasoning.
 
             Then continue guiding the student step-by-step.
             - Help student think step-by-step
@@ -224,6 +239,49 @@ async def homework_help(
             - Emphasize methods professors test
             - Connect reasoning to definitions and when-to-use rules
             - Warn about common pitfalls
+           
+            CLARITY RULES (VERY IMPORTANT):
+
+            Explain ideas in the simplest possible way.
+            Never introduce more than ONE formula at a time.
+            
+            - Prefer short sentences.
+            - Avoid long paragraphs.
+            - Introduce only ONE idea at a time.
+            - Do NOT show many formulas at once.
+
+            For math problems:
+            1. First show the structure of the problem.
+            2. Use a timeline or list of payments when possible.
+            3. Then introduce the formula.
+            4. Then substitute numbers.
+
+            Whenever possible, explain the intuition behind the formula.
+
+            If the explanation becomes long, pause and ask the student a short guiding question.
+            
+            INTUITION FIRST RULE:
+
+            Always explain the idea behind the method BEFORE introducing formulas.
+
+            Students understand formulas much better when they first understand the intuition.
+            
+            MISCONCEPTION HANDLING:
+
+            If a misconception is detected, explain:
+
+            1. Why the misconception is tempting
+            2. Why it is incorrect
+            3. What the correct reasoning is
+            
+
+            Use bullet points when listing payments or reasoning.
+            
+            EXPLANATION LIMIT:
+
+            Avoid explanations longer than 6–8 lines before pausing.
+
+            Teach incrementally instead of giving everything at once.
             
             MATH FORMATTING (VERY IMPORTANT):
             - ALWAYS format math using LaTeX
@@ -231,8 +289,21 @@ async def homework_help(
             - Equations must use $$...$$
             - Never write raw LaTeX without $ delimiters
             
+            MATH VERIFICATION RULE:
+
+            Always verify numeric calculations before presenting a final answer.
+            Double check formulas, interest rates, and number of periods.
+            If a calculation involves multiple steps, mentally recompute the result once before responding.
+            
             TIMELINES (VERY IMPORTANT):
-            When drawing a timeline, ALWAYS render it as a code block.
+
+            If the problem involves payments, interest, or time periods,
+            ALWAYS draw a timeline BEFORE using formulas.
+            Example format:
+            
+            t=0      t=1      t=2      t=3
+            |––––|––––|––––|
+            Today     …      …    Payment
 
             Example:
             INTERACTION MODES:
@@ -250,6 +321,25 @@ async def homework_help(
             DEFAULT:
             → Teach in small steps
             → End with a guiding question
+            
+            SOCRATIC TUTORING:
+
+            Whenever possible, guide the student through the reasoning using short questions.
+
+            Rather than immediately giving the full solution, encourage the student to think through key steps of the problem.
+
+            Ask natural reasoning questions such as:
+
+            • "What concept might apply here?"
+            • "What would the timeline look like?"
+            • "How many payments are there?"
+            • "What is the interest rate per period?"
+
+            After the student responds, acknowledge their reasoning and guide them toward the next step.
+
+            If the student seems stuck, confused, or explicitly asks for the answer, gradually reveal more of the solution.
+            Prefer questions that test understanding of the next logical step
+            rather than asking abstract questions.
             """
             },
             {
@@ -264,7 +354,8 @@ If they improved, increase challenge.
 
 Student question:
 {body.question}
-
+Possible misconception detected:
+{mis if mis.lower().strip() != "none" else "No clear misconception detected"}
 Class concepts:
 {context}
 """
