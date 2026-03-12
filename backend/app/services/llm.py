@@ -29,7 +29,6 @@ async def top_k_concepts(query: str, concepts: list, k=5):
     if not concepts:
         return []
 
-    # Only embed query (1 call)
     qemb = client.embeddings.create(
         model="text-embedding-3-small",
         input=query
@@ -40,16 +39,20 @@ async def top_k_concepts(query: str, concepts: list, k=5):
     scored = []
 
     for c in concepts:
+
+        # AUTO-GENERATE embedding if missing
         if c.embedding is None:
-            continue
+            text = f"{c.name} {c.description or ''} {c.definition or ''}"
+            c.embedding = embed_text(text)
 
         cvec = np.array(c.embedding)
+
         score = cosine_sim(qvec, cvec)
         scored.append((score, c))
 
     scored.sort(reverse=True, key=lambda x: x[0])
 
-    return [c for _, c in scored[:k]]
+    return scored[:k]
  
 from jsonschema import validate, ValidationError
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))

@@ -111,7 +111,39 @@ function formatTutorText(text: string) {
 
     setLoading(false);
   }
+// ================= REVIEW WORK =================
+async function reviewUpload(e:any){
 
+  if(!classId) return
+
+  const file = e.target.files[0]
+  if(!file) return
+
+  const form = new FormData()
+  form.append("file",file)
+
+  setLoading(true)
+
+  const res = await fetch(
+    `http://localhost:8000/homework/review-work?class_id=${classId}`,
+    {
+      method:"POST",
+      body:form
+    }
+  )
+
+  const data = await res.json()
+
+  setMessages(m=>[
+    ...m,
+    {
+      role:"assistant",
+      content:data.review
+    }
+  ])
+
+  setLoading(false)
+}
   // ================= CLEAR CHAT =================
   async function clearChat(){
 
@@ -268,7 +300,15 @@ function formatTutorText(text: string) {
           </button>
 
           <input type="file" onChange={upload}/>
+<div className="border p-3 rounded bg-blue-50">
 
+<div className="text-sm font-semibold mb-1">
+Upload your work for feedback
+</div>
+
+<input type="file" onChange={reviewUpload}/>
+
+</div>
           <button
             onClick={clearChat}
             className="bg-red-500 text-white px-3 py-2 rounded"

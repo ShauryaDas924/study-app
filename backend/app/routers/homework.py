@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 from app.models import Concept, ChatMemory
 from app.db import get_db
-from app.services.llm import client, top_k_concepts, grounding_confidence
+from app.services.llm import client, kimi_client, top_k_concepts, grounding_confidence
 from app.services.file_extraction import extract_text
 from app.services.auth import get_current_user_id
 from app.models import Mastery
@@ -55,11 +55,26 @@ async def homework_help(
 
     concepts = res.scalars().all()
 
-    top_concepts = await top_k_concepts(
+    # Retrieve concepts with scores
+    scored_concepts = await top_k_concepts(
         body.question,
         concepts,
-        k=3
+        k=6
     )
+
+    # Separate concepts from scores
+    top_concepts = [c for score, c in scored_concepts]
+    print("\nTOTAL CONCEPTS IN CLASS:", len(concepts))
+
+    missing = sum(1 for c in concepts if c.embedding is None)
+    print("CONCEPTS WITH MISSING EMBEDDINGS:", missing)
+    print("\n===== RAG CONCEPT RETRIEVAL =====")
+
+    for i, (score, c) in enumerate(scored_concepts, 1):
+        print(f"\n[Concept {i}]")
+        print(f"Score: {round(score,4)}")
+        print(f"Name: {c.name}")
+
 
     context = "\n\n".join([
         f"""
@@ -164,15 +179,58 @@ async def homework_help(
         if mrows else 0.4
     )
     # 2) LLM call
-    resp = client.chat.completions.create(
-        model="gpt-4.1",
+    resp = kimi_client.chat.completions.create(
+        model="kimi-k2.5",
         messages=[
             {
                 
                  "role":"system",
                  "content":
             f"""You are a patient, expert tutor helping with homework.
+            SOCRATIC TUTOR MODE (STRICT)
 
+            You are NOT allowed to immediately solve the student's problem.
+
+            Your role is to guide the student to the answer step-by-step.
+
+            Rules:
+
+            1. Never give the final numeric answer unless the student explicitly asks for it.
+            2. Never compute the final result in the first response.
+            3. First help the student identify the correct concept or method.
+            4. Ask a question that helps the student take the next step.
+            5. Reveal at most ONE step of reasoning at a time.
+            6. After each explanation, ask a guiding question.
+
+            If the student asks for the answer directly:
+            → ask them what step they tried first.
+
+            If the student says "hint":
+            → give only a small hint.
+
+            If the student says "next step":
+            → reveal the next reasoning step.
+
+            IMPORTANT:
+            The goal is learning, not speed.
+            Always pause before the final calculation and ask the student what they think the next step is.
+            FINAL ANSWER SAFETY RULE
+
+            Do NOT compute the final numeric answer unless the student explicitly requests it.
+
+            Instead:
+
+            • stop one step before the final calculation
+            • ask the student to perform the final step
+            • check their reasoning
+        
+            Example behavior:
+
+            Instead of:
+            "The answer is X ≈ 5505."
+
+            Say:
+            "Now we have the equation. What value do you get for X when you solve it?"
             Student estimated mastery level: {avg_mastery}
 
             If mastery < 0.5:
@@ -361,7 +419,7 @@ Class concepts:
 """
             }
         ],
-        temperature=0.4
+        
     )
 
     answer = resp.choices[0].message.content
@@ -433,3 +491,235 @@ async def clear_chat(
     await db.commit()
 
     return {"status": "cleared"}
+
+
+# ----------------------
+# REVIEW STUDENT WORK (VISION)
+# ----------------------
+@router.post("/review-work")
+async def review_student_work(
+    class_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+
+    if not class_id:
+        raise HTTPException(400, "class_id required")
+
+    class_uuid = UUID(class_id)
+
+    # -------- LOAD CLASS CONCEPTS --------
+    res = await db.execute(
+        select(Concept).where(
+            Concept.class_id == class_uuid,
+            Concept.user_id == current_user_id
+        )
+    )
+
+    concepts = res.scalars().all()
+    
+    # -------- RETRIEVE RELEVANT CONCEPTS --------
+    query = "student handwritten math solution"
+
+    scored_concepts = await top_k_concepts(
+        query,
+        concepts,
+        k=6
+    )
+
+    top_concepts = [c for score, c in scored_concepts]
+    
+    print("\n===== REVIEW CONCEPT RETRIEVAL =====")
+
+    for i, (score, c) in enumerate(scored_concepts, 1):
+        print(f"\n[Concept {i}]")
+        print(f"Score: {round(score,4)}")
+        print(f"Name: {c.name}")
+
+    content = await file.read()
+
+    import base64
+    img_b64 = base64.b64encode(content).decode()
+    
+    # -------- BUILD CONCEPT CONTEXT --------
+    context = "\n\n".join([
+    f"""
+    CONCEPT KNOWLEDGE
+
+    Name: {c.name}
+
+    Definition:
+    {c.definition or c.description}
+
+    When to use:
+    {c.when_to_use or "Use this concept when solving relevant problems."}
+    
+    Common pitfall:
+    {c.pitfalls or "Students often misuse this concept."}
+    """
+    for c in top_concepts
+    ])[:3000]
+
+
+    resp = kimi_client.chat.completions.create(
+        model="kimi-k2.5",
+        messages=[
+            {
+                "role":"system",
+                "content":f"""
+            You are an expert actuarial science and mathematics tutor reviewing a student's solution.
+
+            Relevant class concepts:
+
+            {context}
+
+            When analyzing the student's work:
+            • Identify which concept the student is trying to apply
+            • If a mistake occurs, explain which concept is misused
+            • Reference concept names when appropriate
+
+            The student uploaded an image showing their handwritten work on a problem.
+
+            Your job is NOT to immediately solve the problem.
+
+            Your job is to carefully evaluate the student's reasoning so far and guide them toward the correct solution.
+
+            The student uploaded an image showing their handwritten work on a problem.
+
+            Your job is NOT to immediately solve the problem.
+    
+            Your job is to carefully evaluate the student's reasoning so far and guide them toward the correct solution.
+
+------------------------------------------------
+
+YOUR OBJECTIVES
+
+1. Identify what the student is doing correctly
+2. Detect mistakes in reasoning, formulas, or structure
+3. Determine whether the student's overall approach is valid
+4. Explain why any mistakes occur
+5. Guide the student toward the next correct step
+
+Your goal is to help the student learn from their current work.
+
+------------------------------------------------
+
+ANALYSIS METHOD
+
+Carefully examine the student's work step-by-step.
+
+Look for:
+
+• incorrect formulas  
+• incorrect substitutions  
+• incorrect interest rate conversions  
+• missing timelines or structure  
+• algebra mistakes  
+• incorrect probability reasoning  
+• misinterpreting the problem  
+
+Focus on the reasoning behind each step.
+
+------------------------------------------------
+
+IMPORTANT RULES
+
+• Do NOT solve the entire problem immediately
+• Do NOT jump to the final answer
+• Focus on evaluating the student's current steps
+• Guide the student toward the next correct step
+• Encourage correct reasoning when it appears
+
+If the student is on the right path, clearly say so.
+
+------------------------------------------------
+
+STRUCTURE YOUR RESPONSE USING THESE SECTIONS
+
+## What You Did Correctly
+
+Identify steps the student handled properly.
+
+Explain why those steps are correct.
+
+------------------------------------------------
+
+## Issues Detected
+
+Identify mistakes or potential mistakes.
+
+For each issue explain:
+
+• what the student did  
+• why it may be incorrect  
+• what concept is being misapplied  
+
+------------------------------------------------
+
+## Is the Approach Valid?
+
+Explain whether the student's general strategy is correct.
+
+Example:
+
+• Correct method but calculation mistake  
+• Correct structure but wrong formula  
+• Incorrect method entirely  
+
+------------------------------------------------
+
+## Next Step
+
+Tell the student the next logical step they should take.
+
+Give a hint or guidance rather than solving the entire problem.
+
+Example:
+
+• what to compute next  
+• what formula to use  
+• what structure to build (timeline, cases, etc.)
+
+------------------------------------------------
+
+CLARITY RULES
+
+• Use short explanations
+• Use bullet points where helpful
+• Avoid long paragraphs
+• Focus on teaching
+
+------------------------------------------------
+
+MATH FORMATTING
+
+Use LaTeX for formulas.
+
+Inline math: $...$
+
+Equations: $$...$$
+"""
+            },
+            {
+                "role":"user",
+                "content":[
+                    {
+                        "type":"text",
+                        "text":"Here is my work so far on the problem. Please review it."
+                    },
+                    {
+                        "type":"image_url",
+                        "image_url":{
+                            "url":f"data:image/png;base64,{img_b64}"
+                        }
+                    }
+                ]
+            }
+        ],
+        temperature=0.3
+    )
+
+    return {
+        "review": resp.choices[0].message.content
+    }

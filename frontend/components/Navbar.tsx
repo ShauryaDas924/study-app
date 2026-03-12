@@ -6,15 +6,16 @@ import ClassSelector from "@/components/ClassSelector";
 
 const items = [
   { href: "/dashboard", label: "Dashboard" },
-   { href: "/classes", label: "Classes" },
+  { href: "/classes", label: "Classes" },
   { href: "/notes", label: "Notes" },
   { href: "/practice", label: "Practice" },
   { href: "/exam", label: "Exam" },
   { href: "/analytics", label: "Analytics" },
   { href: "/planner", label: "Planner" },
   { href: "/tutor", label: "Tutor" },
-{ href: "/homework", label: "Homework" },
-{ href: "/flashcards", label: "Flashcards" },
+  { href: "/homework", label: "Homework" },
+  { href: "/flashcards", label: "Flashcards" },
+  { href: "/insights", label: "Insights" },
 ];
 
 export default function Navbar() {
