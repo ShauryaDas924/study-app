@@ -4,6 +4,11 @@ import pathlib
 from openai import OpenAI
 import numpy as np
 
+EXAMPLE_QUESTIONS_PATH = pathlib.Path("practice_engine_spec.md")
+
+with open(EXAMPLE_QUESTIONS_PATH) as f:
+    EXAMPLE_QUESTIONS = f.read()
+    
 def clean_note_text(text: str) -> str:
 
     # Remove control characters but KEEP math symbols
@@ -977,20 +982,33 @@ async def generate_one_question(concepts: list, difficulty: int, subject_tag: st
     resp = client.chat.completions.create(
         model="gpt-4.1",
         messages=[
-            {"role": "system", "content": PRACTICE_PROMPT},
-            {"role": "user", "content": f"""
-        Use this student context:
+            {
+                "role": "system",
+                "content": PRACTICE_PROMPT
+            },
+            {
+                "role": "system",
+                "content": f"""
+    Here are gold-standard example exam questions.
+    Follow their style, structure, and reasoning depth.
 
-        {context_blob}
+    {EXAMPLE_QUESTIONS}
+    """
+            },
+            {
+                "role": "user",
+                "content": f"""
+    Use this student context:
 
-        Now generate a question.
+    {context_blob}
+    
+    INPUTS:
+    {json.dumps(payload)}
 
-        INPUTS:
-        {json.dumps(payload)}
-
-        SCHEMA:
-        {json.dumps(QUESTION_SCHEMA)}
-        """}
+    SCHEMA:
+    {json.dumps(QUESTION_SCHEMA)}
+    """
+            }
         ],
         temperature=0.3,
     )

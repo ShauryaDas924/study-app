@@ -27,6 +27,35 @@ from sqlalchemy import func
 from app.models import ConceptDependency
 router = APIRouter(prefix="/practice", tags=["practice"])
 
+
+async def get_concept_cluster(
+    db: AsyncSession,
+    base_concept: Concept,
+    concept_map: dict,
+    max_size: int = 5
+):
+    """
+    Build a cluster of related concepts using dependency graph.
+    """
+
+    cluster = [base_concept]
+
+    # fetch dependencies
+    res = await db.execute(
+        select(ConceptDependency.depends_on_concept_id)
+        .where(ConceptDependency.concept_id == base_concept.id)
+    )
+
+    dep_ids = res.scalars().all()
+
+    for did in dep_ids:
+        c = concept_map.get(did)
+        if c:
+            cluster.append(c)
+
+    # limit cluster size
+    return cluster[:max_size]
+    
 class GenerateIn(BaseModel):
     class_id: UUID
     difficulty: int | None = 3
@@ -245,7 +274,7 @@ async def generate_practice(
         )
     )
     concepts = cres.scalars().all()
-
+    concept_map = {c.id: c for c in concepts}
     if not concepts:
         raise HTTPException(400, "No concepts found. Extract concepts first.")
 
@@ -300,7 +329,39 @@ async def generate_practice(
     for _ in range(payload.n):
 
         
-        sampled = random.sample(concept_payload, min(5, len(concept_payload)))
+        # ----- Adaptive concept selection -----
+
+        if payload.subject_tag == "exam":
+
+            # mix of weak + random for coverage
+            weak_pool = concepts[:max(3, len(concepts)//3)]
+
+            if random.random() < 0.7:
+                base_concept = random.choice(weak_pool)
+            else:
+                base_concept = random.choice(concepts)
+
+        else:
+
+            # practice focuses more on weak concepts
+            weak_pool = concepts[:max(3, len(concepts)//2)]
+            base_concept = random.choice(weak_pool)
+
+        cluster = await get_concept_cluster(
+            db,
+            base_concept,
+            concept_map
+        )
+
+        sampled = [
+            {
+                "name": c.name,
+                "definition": c.definition,
+                "when_to_use": c.when_to_use,
+                "pitfalls": c.pitfalls
+            }
+            for c in cluster
+        ]
 
         # names for LLM concept list
         names = [c["name"] for c in sampled]
@@ -489,7 +550,7 @@ async def start_exam(
     # reuse your practice generation logic
     gen = GenerateIn(
         class_id=payload.class_id,
-        difficulty=3,
+        difficulty=None,
         n=payload.n_questions,
         subject_tag="exam",
         question_type=payload.question_type

@@ -18,7 +18,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 async def extract_from_image(file_bytes: bytes) -> str:
     b64 = base64.b64encode(file_bytes).decode()
 
-    resp = await client.chat.completions.create(
+    resp = client.chat.completions.create(
         model="gpt-4.1",
         messages=[
             {

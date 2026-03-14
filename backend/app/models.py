@@ -193,7 +193,22 @@ class Exam(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    
+
+class ExamInsight(Base):
+    __tablename__ = "exam_insights"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    class_id = Column(UUID(as_uuid=True), ForeignKey("classes.id"), nullable=False, index=True)
+
+    filename = Column(Text, nullable=False)
+
+    extracted_text = Column(Text, nullable=True)
+    analysis = Column(Text, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 # ----------------------
 # EXAM SESSIONS
 # ----------------------

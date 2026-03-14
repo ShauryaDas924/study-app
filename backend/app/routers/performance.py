@@ -6,7 +6,8 @@ from sqlalchemy import select
 from uuid import UUID
 from app.services.llm import client, kimi_client
 from app.db import get_db
-from app.models import Concept
+from app.models import Concept, ExamInsight
+from fastapi import Form
 from app.services.llm import top_k_concepts
 
 
@@ -15,7 +16,7 @@ router = APIRouter(prefix="/performance", tags=["performance"])
 
 @router.post("/analyze-exam")
 async def analyze_exam(
-    class_id: str,
+    class_id: str = Form(...),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user_id: str = Depends(get_current_user_id)
@@ -32,7 +33,14 @@ async def analyze_exam(
 
     content = await file.read()
 
-    text = await extract_text(file.filename, content)
+    text = await extract_text(
+        file.filename,
+        content,
+        math_mode=True
+    )
+
+    print("\n===== EXTRACTED EXAM TEXT =====")
+    print(text[:800])
     
     # -------- LOAD CLASS CONCEPTS --------
     res = await db.execute(
@@ -45,7 +53,7 @@ async def analyze_exam(
     concepts = res.scalars().all()
     
     # -------- RAG CONCEPT RETRIEVAL --------
-    query = text[:2000]
+    query = text[:4000]
     print("\nTOTAL CONCEPTS IN CLASS:", len(concepts))
 
     missing = sum(1 for c in concepts if c.embedding is None)
@@ -362,9 +370,52 @@ Equations: $$...$$
                 "content": text
             }
         ],
-        temperature=0.3
+        
     )
 
+    analysis_text = resp.choices[0].message.content
+
+    insight = ExamInsight(
+        user_id=current_user_id,
+        class_id=class_uuid,
+        filename=file.filename,
+        extracted_text=text,
+        analysis=analysis_text
+    )
+
+    db.add(insight)
+    await db.commit()
+
     return {
-        "analysis": resp.choices[0].message.content
+        "analysis": analysis_text
     }
+
+@router.get("/insights/{class_id}")
+async def get_exam_insights(
+    class_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+
+    class_uuid = UUID(class_id)
+
+    res = await db.execute(
+        select(ExamInsight)
+        .where(
+            ExamInsight.user_id == current_user_id,
+            ExamInsight.class_id == class_uuid
+        )
+        .order_by(ExamInsight.created_at.desc())
+    )
+
+    rows = res.scalars().all()
+
+    return [
+        {
+            "id": str(r.id),
+            "filename": r.filename,
+            "analysis": r.analysis,
+            "created_at": r.created_at
+        }
+        for r in rows
+    ]
