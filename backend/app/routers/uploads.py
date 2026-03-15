@@ -5,6 +5,7 @@ from app.models import Note
 from fastapi import APIRouter, UploadFile, File, Form, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
+from app.services.llm import refine_notes
 from app.models import Concept
 from app.services.file_extraction import extract_text
 from app.services.llm import (
@@ -33,7 +34,11 @@ async def upload_note(
     user_id = Depends(get_current_user_id)
 ):
     content = await file.read()
-    text = await extract_text(file.filename, content)
+
+    raw_text = await extract_text(file.filename, content)
+
+    # Clean the notes with LLM
+    text = await refine_notes(raw_text)
     
     # CREATE NOTE RECORD
     note = Note(

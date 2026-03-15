@@ -45,7 +45,13 @@ export default function NotesPage() {
     queryFn: () => api.getNote(selectedNoteId as UUID),
     enabled: !!selectedNoteId,
   });
+useEffect(() => {
+  const text = (noteQ.data?.content_json as any)?.text;
 
+  if (typeof text === "string") {
+    setUploadedText(text);
+  }
+}, [noteQ.data]);
   /* ===============================
      EXTRACT CONCEPTS
   =============================== */
@@ -138,7 +144,10 @@ export default function NotesPage() {
             }}
           />
 
-          <NoteEditor initialText={uploadedText} />
+          <NoteEditor
+  key={selectedNoteId || "new"}
+  initialText={uploadedText}
+/>
 
           {/* ================= FLASHCARDS ================= */}
           {allFlashcards.length > 0 && (
@@ -241,9 +250,9 @@ export default function NotesPage() {
         ) : noteQ.isLoading ? (
           <div>Loading…</div>
         ) : (
-          <pre className="text-xs bg-slate-50 rounded-xl p-4">
-            {JSON.stringify(noteQ.data?.content_json, null, 2)}
-          </pre>
+          <pre className="text-sm bg-slate-50 rounded-xl p-4 whitespace-pre-wrap">
+  {(noteQ.data?.content_json as any)?.text}
+</pre>
         )}
 
         {extractM.data && (

@@ -53,21 +53,7 @@ export default function UploadNotes({
         extractedText.slice(0, 200)
       );
 
-      // ✅ SAVE NOTE WITH REAL TEXT
-      await fetch("http://localhost:8000/notes", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify({
-          class_id: selectedClassId,
-          title: file.name,
-          content_json: {
-            text: extractedText,
-          },
-        }),
-      });
+     
 
       onExtracted(extractedText, data.flashcards || []);
 
