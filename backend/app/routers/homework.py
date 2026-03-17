@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
-from app.models import Concept, ChatMemory
+from app.models import Concept, ChatMemory, StudentPitfall
 from app.db import get_db
 from app.services.llm import client, kimi_client, top_k_concepts, grounding_confidence
 from app.services.file_extraction import extract_text
@@ -24,11 +24,12 @@ class HWIn(BaseModel):
 # ----------------------
 @router.post("/help")
 async def homework_help(
+    
     body: HWIn,
     db: AsyncSession = Depends(get_db),
     current_user_id: str = Depends(get_current_user_id)
 ):
-
+    print("\n📨 Incoming Question:", body.question)
     # ✅ Validate class_id
     if not body.class_id:
         raise HTTPException(400, "class_id required")
@@ -37,6 +38,167 @@ async def homework_help(
         class_uuid = UUID(body.class_id)
     except:
         raise HTTPException(400, "Invalid class_id")
+    
+    # ----------------------
+    # ANALYZE WORK MODE
+    # ----------------------
+    if body.question and "analyze my work" in body.question.lower():
+        print("\n🧠 ANALYZE MODE TRIGGERED")
+        db.add(ChatMemory(
+            user_id=current_user_id,
+            class_id=class_uuid,
+            role="user",
+            content=body.question
+        ))
+        # Load recent chat history
+        res = await db.execute(
+            select(ChatMemory.role, ChatMemory.content)
+            .where(
+                ChatMemory.user_id == current_user_id,
+                ChatMemory.class_id == class_uuid
+            )
+            .order_by(ChatMemory.created_at.desc())
+            .limit(8)
+        )
+
+        history = res.fetchall()
+    
+        history_text = "\n".join(
+            [f"{r[0]}: {r[1]}" for r in reversed(history)]
+        )
+        print("\n📜 Chat History Used for Analysis:")
+        print(history_text)
+        
+        resp = kimi_client.chat.completions.create(
+            model="kimi-k2.5",
+            messages=[
+                {
+                    "role":"system",
+                    "content":"""
+    Analyze the student's reasoning in the conversation.
+
+    Return JSON only:
+
+    {
+    "strengths":[ "..."],
+    "pitfalls":[
+    {
+        "tag":"timeline_construction",
+        "explanation":"student struggles placing values on timeline"
+    }
+    ]
+    }
+
+    Pitfall tags must be short snake_case skills.
+    """
+                },
+                {
+                    "role":"user",
+                    "content":history_text
+                }
+            ],
+        )
+
+        import json
+
+        raw = resp.choices[0].message.content
+        raw = raw.replace("```json","").replace("```","").strip()
+        print("\n🤖 RAW LLM RESPONSE:")
+        print(raw)
+        try:
+            data = json.loads(raw)
+        except Exception as e:
+            print("❌ JSON PARSE ERROR:", e)
+            print("RAW:", raw)
+            return {"help": "Error parsing analysis response"}
+
+        strengths = data.get("strengths", [])
+        pitfalls = data.get("pitfalls", [])
+        print("\n🧠 Generating NATURAL explanation...")
+
+        natural_resp = kimi_client.chat.completions.create(
+            model="kimi-k2.5",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+You are a natural, conversational tutor.
+
+You are reviewing a student's reasoning.
+
+Explain:
+• what they did well
+• where they went wrong
+• why the mistake happened
+
+DO NOT sound like a report.
+DO NOT mention JSON or tags.
+DO NOT say "pitfall tag".
+
+Speak like a real tutor helping a student improve.
+
+Be specific to THEIR reasoning.
+Be clear and slightly concise.
+"""
+                },
+                {
+                    "role": "user",
+                    "content": f"""
+Student conversation:
+{history_text}
+
+Structured analysis:
+Strengths: {strengths}
+Pitfalls: {pitfalls}
+
+Explain this naturally to the student.
+"""
+                }
+            ],
+        )
+
+        natural_answer = natural_resp.choices[0].message.content
+
+        print("\n🗣 NATURAL RESPONSE:")
+        print(natural_answer)
+        print("\n💾 Saving Pitfalls:")
+        for p in pitfalls:
+            db.add(
+                StudentPitfall(
+                    user_id=current_user_id,
+                    class_id=class_uuid,
+                    pitfall=p["tag"],
+                    explanation=p.get("explanation")
+                )
+            )
+            print("Saving:", p)
+
+
+
+        # ✅ THEN QUERY
+        res = await db.execute(
+            select(StudentPitfall).where(
+                StudentPitfall.user_id == current_user_id,
+                StudentPitfall.class_id == class_uuid
+            )
+        )
+
+        rows = res.scalars().all()
+        print("📊 Total pitfalls now:", len(rows))
+        print("✅ Pitfalls committed to DB")
+
+        answer = natural_answer
+
+        db.add(ChatMemory(
+            user_id=current_user_id,
+            class_id=class_uuid,
+            role="assistant",
+            content=answer
+        ))
+
+        await db.commit()
+
+        return {"help": answer}
         
     # -------- SAVE USER MESSAGE --------
     db.add(ChatMemory(
@@ -717,9 +879,173 @@ Equations: $$...$$
                 ]
             }
         ],
-        temperature=0.3
+       
     )
 
     return {
         "review": resp.choices[0].message.content
     }
+
+
+# ----------------------
+# GET STORED PITFALLS
+# ----------------------
+@router.get("/pitfalls/{class_id}")
+async def get_pitfalls(
+    class_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+
+    res = await db.execute(
+        select(StudentPitfall).where(
+            StudentPitfall.user_id == current_user_id,
+            StudentPitfall.class_id == UUID(class_id)
+        )
+    )
+
+    rows = res.scalars().all()
+
+    return [
+        {
+            "pitfall": r.pitfall,
+            "explanation": r.explanation
+        }
+        for r in rows
+    ]
+
+
+# ----------------------
+# PRACTICE FROM PITFALL
+# ----------------------
+@router.post("/practice-pitfall")
+async def practice_pitfall(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+    pitfall = body.get("pitfall")
+    class_id = body.get("class_id")
+
+    if not pitfall or not class_id:
+        raise HTTPException(400, "pitfall and class_id required")
+
+    class_uuid = UUID(class_id)
+
+    print("\n🎯 PRACTICE MODE:", pitfall)
+
+    # -------- LOAD CONCEPTS --------
+    res = await db.execute(
+        select(Concept).where(
+            Concept.class_id == class_uuid,
+            Concept.user_id == current_user_id
+        )
+    )
+    concepts = res.scalars().all()
+
+    # -------- FILTER RELEVANT CONCEPTS --------
+    relevant = [
+        c for c in concepts
+        if pitfall in (c.pitfalls or "").lower()
+    ]
+
+    if not relevant:
+        relevant = concepts[:3]
+
+    concept_context = "\n\n".join([
+        f"""
+Concept: {c.name}
+Definition: {c.definition or c.description}
+When to use: {c.when_to_use}
+Common mistake: {c.pitfalls}
+"""
+        for c in relevant
+    ])[:3000]
+
+    print("\n🧠 USING CONCEPTS:\n", concept_context)
+
+    # -------- GENERATE QUESTIONS --------
+    resp = kimi_client.chat.completions.create(
+        model="kimi-k2.5",
+        messages=[
+            {
+                "role": "system",
+                "content": f"""
+You are an expert tutor generating targeted practice problems.
+
+The student has a specific weakness:
+
+{pitfall}
+
+Your goal:
+Generate 3 high-quality practice questions that directly train this weakness.
+
+MPORTANT:
+Every question MUST specifically target this pitfall.
+Do NOT include unrelated skills.
+
+You are NOT limited to any subject.
+Use the provided concepts as the source of truth.
+
+---------------------
+
+HOW TO DESIGN QUESTIONS
+
+Each question must:
+• require applying a concept (not memorization)
+• force the student to confront the weakness
+• reflect realistic exam or homework problems
+• involve reasoning, not just recall
+
+---------------------
+
+ADAPT TO THE PITFALL
+
+- If the pitfall is about structure (e.g., timelines, setup):
+  → require building structure
+
+- If the pitfall is about concept confusion:
+  → require choosing the correct method
+
+- If the pitfall is about calculation mistakes:
+  → require careful multi-step reasoning
+
+---------------------
+
+RULES
+
+• Do NOT solve the questions
+• Do NOT give hints
+• Do NOT explain answers
+• Keep wording clear and concise
+• Avoid trivial or overly simple questions
+
+---------------------
+
+FORMAT
+
+Question 1:
+...
+
+Question 2:
+...
+
+Question 3:
+...
+"""
+            },
+            {
+                "role": "user",
+                "content": f"""
+Relevant concepts:
+{concept_context}
+"""
+            }
+        ]
+    )
+
+    questions = resp.choices[0].message.content
+
+    print("\n🧪 GENERATED QUESTIONS:\n", questions)
+
+    return {"questions": questions}

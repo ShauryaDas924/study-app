@@ -298,7 +298,13 @@ async function reviewUpload(e:any){
           >
             Next Step
           </button>
-
+<button
+  disabled={loading}
+  onClick={()=>ask("analyze my work what did I do well and what are my pitfalls and mistakes")}
+  className="bg-indigo-600 text-white px-3 py-2 rounded"
+>
+Analyze My Work
+</button>
           <input type="file" onChange={upload}/>
 <div className="border p-3 rounded bg-blue-50">
 

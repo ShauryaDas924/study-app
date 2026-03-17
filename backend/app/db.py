@@ -10,7 +10,23 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL missing in .env")
 
-engine = create_async_engine(DATABASE_URL, echo=False, future=True)
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    future=True,
+
+    pool_size=20,
+    max_overflow=40,
+    pool_timeout=60,
+    pool_recycle=1800,
+    pool_pre_ping=True,
+
+    connect_args={
+        "server_settings": {
+            "statement_timeout": "60000"  # 60 seconds
+        }
+    }
+)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 Base = declarative_base()

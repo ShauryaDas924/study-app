@@ -160,6 +160,22 @@ class MistakeLog(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+
+# ----------------------
+# STUDENT PITFALL MEMORY
+# ----------------------
+class StudentPitfall(Base):
+    __tablename__ = "student_pitfalls"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    user_id = Column(UUID(as_uuid=True), index=True)
+    class_id = Column(UUID(as_uuid=True), index=True)
+
+    pitfall = Column(Text, nullable=False)        # e.g. timeline_construction
+    explanation = Column(Text, nullable=True)     # explanation text
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 # ----------------------
 # MASTERY
 # ----------------------
