@@ -1049,3 +1049,25 @@ Relevant concepts:
     print("\n🧪 GENERATED QUESTIONS:\n", questions)
 
     return {"questions": questions}
+
+@router.delete("/pitfalls/{class_id}")
+async def clear_pitfalls(
+    class_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+    if not class_id:
+        raise HTTPException(400, "class_id required")
+
+    class_uuid = UUID(class_id)
+
+    await db.execute(
+        StudentPitfall.__table__.delete().where(
+            StudentPitfall.user_id == current_user_id,
+            StudentPitfall.class_id == class_uuid
+        )
+    )
+
+    await db.commit()
+
+    return {"status": "pitfalls cleared"}
