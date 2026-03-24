@@ -1,5 +1,6 @@
 
 
+
 import re
 import os, json
 import pathlib
@@ -586,28 +587,6 @@ def booster_distributions(note_text: str, concepts: list):
 
     return concepts
     
-def attach_pitfalls_to_concepts(concepts, pitfalls):
-
-    # normalize concept names
-    concept_map = {
-        normalize_concept_name(c["name"]): c
-        for c in concepts
-    }
-
-    for p in pitfalls:
-        key = normalize_concept_name(p["concept"])
-
-        if key in concept_map:
-            c = concept_map[key]
-
-            if "pitfalls" not in c:
-                c["pitfalls"] = []
-
-            # avoid duplicates
-            if p["pitfall"] not in c["pitfalls"]:
-                c["pitfalls"].append(p["pitfall"])
-
-    return list(concept_map.values())
     
 IDENTITY_PATTERN = re.compile(
     r"[a-zA-Zδλσμ]+\s*=\s*[^\n]{3,50}"
@@ -1309,37 +1288,7 @@ async def extract_concepts_from_note(note_text: str):
     return ranked[:60]
     
 
-async def extract_pitfalls_from_note(note_text: str):
 
-    cleaned = clean_note_text(note_text)
-
-    if not cleaned.strip():
-        return []
-
-    resp = kimi_client.chat.completions.create(
-        model="kimi-k2.5",
-        messages=[
-            {"role": "system", "content": PITFALL_PROMPT},
-            {"role": "user", "content": cleaned},
-        ],
-    )
-
-    raw = resp.choices[0].message.content
-    parsed = safe_json_loads(raw)
-
-    if not parsed or "pitfalls" not in parsed:
-        return []
-
-    # -------- GROUNDING CHECK (CRITICAL — SAME STANDARD AS CONCEPTS) --------
-    grounded = []
-
-    for p in parsed["pitfalls"]:
-        evidence = p.get("evidence", "").lower()
-
-        if evidence and evidence.strip()[:50] in cleaned.lower():
-            grounded.append(p)
-
-    return grounded
 
 async def rank_exam_importance(concepts: list[dict]):
 
@@ -1632,40 +1581,24 @@ Across the FULL deck:
 
 The goal is BALANCED understanding, not maximum quantity.
 
-CRITICAL THINKING CARDS (STRICT REQUIREMENT)
-
-For EACH concept:
-
-If a "pitfalls" field exists:
-→ You MUST generate at least ONE pitfall-based flashcard
-
-This is NOT optional.
-
-A pitfall card MUST:
-• describe a specific mistake
-• test recognition or correction of that mistake
-• be clearly tied to exam failure modes
-
-Examples:
-
-Q: What mistake do students make when applying ___?
-A: ...
-
-Q: Why is it incorrect to apply ___ in this situation?
-A: ...
-
-Q: What condition do students often ignore when using ___?
-A: ...
-
-FAILURE TO INCLUDE PITFALL CARDS = INVALID OUTPUT
-
---------------------------------
+CRITICAL THINKING CARDS (MANDATORY)
 
 You MUST actively use:
 
 • "Common Pitfalls" → generate mistake-based cards
 • "Conditions / assumptions" → generate when-to-use cards
 • "Exam Insight" → generate decision or reasoning cards
+
+Examples:
+
+Q: What mistake do students make when applying ___?
+A: ...
+
+Q: When should ___ NOT be used?
+A: ...
+
+Q: What condition must hold for ___ to apply?
+A: ...
 
 If these sections exist in the concept, you MUST convert them into flashcards.
 

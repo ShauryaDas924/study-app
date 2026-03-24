@@ -78,13 +78,40 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
             continue
 
         # Generate simple pitfalls automatically
-        
+        pitfall_resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role":"system",
+                    "content":"List one common mistake students make with this concept."
+                },
+                {
+                    "role":"user",
+                    "content":f"{c['name']} : {c.get('description','')}"
+                }
+            ],
+            temperature=0.3
+        )
 
-        pitfall_text = None
+        pitfall_text = pitfall_resp.choices[0].message.content.strip()
             
+        # Generate when_to_use explanation
+        when_resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role":"system",
+                    "content":"Explain when this concept should be used when solving problems. One short sentence."
+                },
+                {
+                    "role":"user",
+                    "content":f"{c['name']} : {c.get('description','')}"
+                }
+            ],
+            temperature=0.3
+        )
 
-        when_text = None
-
+        when_text = when_resp.choices[0].message.content.strip()
         
         concept = Concept(
             user_id=note.user_id,
