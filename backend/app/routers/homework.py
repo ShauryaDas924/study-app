@@ -3,14 +3,17 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
-from app.models import Concept, ChatMemory, StudentPitfall
+import re
+import json
+import base64
+from sqlalchemy.dialects.postgresql import insert
+from app.models import Concept, ChatMemory, StudentPitfall, Mastery
 from app.db import get_db
 from app.services.llm import client, kimi_client, top_k_concepts, grounding_confidence
 from app.services.file_extraction import extract_text
 from app.services.auth import get_current_user_id
-from app.models import Mastery
 from app.services.mastery import update_mastery_value
-from app.services.file_extraction import split_homework_questions
+
 router = APIRouter(prefix="/homework", tags=["homework"])
 
 
@@ -19,12 +22,124 @@ class HWIn(BaseModel):
     question: str
 
 
+def clean_extracted_text(text: str) -> str:
+    """
+    Clean PDF text WITHOUT destroying line structure.
+    This is the key fix.
+    """
+    if not text:
+        return ""
+
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    cleaned_lines = []
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+
+        if not line:
+            cleaned_lines.append("")
+            continue
+
+        # Fix missing spaces between numbers and letters
+        line = re.sub(r'(\d)([A-Za-z])', r'\1 \2', line)
+        line = re.sub(r'([A-Za-z])(\d)', r'\1 \2', line)
+
+        # Fix punctuation spacing
+        line = re.sub(r',([A-Za-z])', r', \1', line)
+        line = re.sub(r'\.([A-Za-z])', r'. \1', line)
+        line = re.sub(r':([A-Za-z])', r': \1', line)
+        line = re.sub(r';([A-Za-z])', r'; \1', line)
+
+        # Collapse repeated spaces INSIDE the line only
+        line = re.sub(r'[ \t]+', ' ', line)
+
+        cleaned_lines.append(line)
+
+    text = "\n".join(cleaned_lines)
+
+    # Remove obvious page labels
+    text = re.sub(r'(?im)^\s*Page\s+\d+\s*$', '', text)
+
+    # Collapse too many blank lines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
+
+
+def split_homework_questions(text: str) -> list[str]:
+    """
+    Split homework safely.
+    Primary rule:
+    - split only at start-of-line question numbers like '1.' '2.' etc.
+
+    Fallback:
+    - if the PDF came in as one huge paragraph, inject newlines before likely
+      question starts, then split again.
+    """
+    if not text or not text.strip():
+        return []
+
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    # Remove header junk before first numbered question
+    first_q = re.search(r'(?m)^\s*1\.\s+', text)
+    if first_q:
+        text = text[first_q.start():]
+
+    # Primary split: start-of-line numbered questions only
+    parts = re.split(r'(?m)^\s*(\d+)\.\s+', text)
+
+    questions = []
+    if len(parts) >= 3:
+        # Format: ["", "1", "question...", "2", "question...", ...]
+        for i in range(1, len(parts), 2):
+            if i + 1 >= len(parts):
+                break
+
+            q_num = parts[i].strip()
+            q_text = parts[i + 1].strip()
+
+            # Remove trailing page markers inside block
+            q_text = re.sub(r'(?im)\bPage\s+\d+\b', '', q_text)
+            q_text = re.sub(r'\n{3,}', '\n\n', q_text).strip()
+
+            if q_text:
+                questions.append(f"{q_num}. {q_text}")
+
+    # Fallback if nothing found or only one giant block found
+    if len(questions) <= 1:
+        block = re.sub(r'\s+', ' ', text).strip()
+
+        # Inject probable question boundaries only for small numbers at sentence boundaries.
+        # This avoids splitting on math like (3n + 1).
+        block = re.sub(r'(?<!\S)(\d{1,2})\.\s+', r'\n\1. ', block)
+
+        parts = re.split(r'(?m)^\s*(\d+)\.\s+', block)
+
+        fallback_questions = []
+        if len(parts) >= 3:
+            for i in range(1, len(parts), 2):
+                if i + 1 >= len(parts):
+                    break
+
+                q_num = parts[i].strip()
+                q_text = parts[i + 1].strip()
+
+                q_text = re.sub(r'\bPage\s+\d+\b', '', q_text).strip()
+                if q_text:
+                    fallback_questions.append(f"{q_num}. {q_text}")
+
+        if fallback_questions:
+            questions = fallback_questions
+
+    return questions
+
+
 # ----------------------
 # TEXT QUESTION
 # ----------------------
 @router.post("/help")
 async def homework_help(
-    
     body: HWIn,
     db: AsyncSession = Depends(get_db),
     current_user_id: str = Depends(get_current_user_id)
@@ -38,7 +153,7 @@ async def homework_help(
         class_uuid = UUID(body.class_id)
     except:
         raise HTTPException(400, "Invalid class_id")
-    
+
     # ----------------------
     # ANALYZE WORK MODE
     # ----------------------
@@ -62,19 +177,19 @@ async def homework_help(
         )
 
         history = res.fetchall()
-    
+
         history_text = "\n".join(
             [f"{r[0]}: {r[1]}" for r in reversed(history)]
         )
         print("\n📜 Chat History Used for Analysis:")
         print(history_text)
-        
+
         resp = kimi_client.chat.completions.create(
             model="kimi-k2.5",
             messages=[
                 {
-                    "role":"system",
-                    "content":"""
+                    "role": "system",
+                    "content": """
     Analyze the student's reasoning in the conversation.
 
     Return JSON only:
@@ -93,8 +208,8 @@ async def homework_help(
     """
                 },
                 {
-                    "role":"user",
-                    "content":history_text
+                    "role": "user",
+                    "content": history_text
                 }
             ],
         )
@@ -102,7 +217,7 @@ async def homework_help(
         import json
 
         raw = resp.choices[0].message.content
-        raw = raw.replace("```json","").replace("```","").strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
         print("\n🤖 RAW LLM RESPONSE:")
         print(raw)
         try:
@@ -163,17 +278,20 @@ Explain this naturally to the student.
         print(natural_answer)
         print("\n💾 Saving Pitfalls:")
         for p in pitfalls:
-            db.add(
-                StudentPitfall(
-                    user_id=current_user_id,
-                    class_id=class_uuid,
-                    pitfall=p["tag"],
-                    explanation=p.get("explanation")
-                )
+            stmt = insert(StudentPitfall).values(
+                user_id=current_user_id,
+                class_id=class_uuid,
+                pitfall=p["tag"],
+                explanation=p.get("explanation")
+            ).on_conflict_do_update(
+                index_elements=["user_id", "class_id", "pitfall"],
+                set_={
+                    "explanation": p.get("explanation")
+                }
             )
+
+            await db.execute(stmt)
             print("Saving:", p)
-
-
 
         # ✅ THEN QUERY
         res = await db.execute(
@@ -199,7 +317,7 @@ Explain this naturally to the student.
         await db.commit()
 
         return {"help": answer}
-        
+
     # -------- SAVE USER MESSAGE --------
     db.add(ChatMemory(
         user_id=current_user_id,
@@ -207,6 +325,7 @@ Explain this naturally to the student.
         role="user",
         content=body.question
     ))
+
     # 1) Get concepts
     res = await db.execute(
         select(Concept).where(
@@ -237,7 +356,6 @@ Explain this naturally to the student.
         print(f"Score: {round(score,4)}")
         print(f"Name: {c.name}")
 
-
     context = "\n\n".join([
         f"""
     CONCEPT KNOWLEDGE
@@ -255,14 +373,15 @@ Explain this naturally to the student.
     """
         for c in top_concepts
     ])[:4000]
+
     # -------- MISCONCEPTION DETECTION --------
     mis_resp = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
-            {"role":"system","content":
+            {"role": "system", "content":
             "Detect if student shows a misconception. \
             Return short phrase or 'none'."},
-            {"role":"user","content":body.question}
+            {"role": "user", "content": body.question}
         ],
         temperature=0
     )
@@ -279,7 +398,7 @@ Explain this naturally to the student.
                 Mastery,
                 {"user_id": current_user_id, "concept_id": c.id}
             )
-        
+
             # create if it doesn't exist
             if not m:
                 m = Mastery(
@@ -300,14 +419,14 @@ Explain this naturally to the student.
             )
 
             m.mastery_prob = new_mastery
-    
+
         db.add(ChatMemory(
             user_id=current_user_id,
             class_id=class_uuid,
             role="system",
             content=f"Detected misconception: {mis}"
         ))
-    
+
     # -------- LOAD LAST CHATS --------
     mem_res = await db.execute(
         select(ChatMemory.role, ChatMemory.content)
@@ -324,6 +443,7 @@ Explain this naturally to the student.
     history_text = "\n".join(
         [f"{r[0]}: {r[1]}" for r in reversed(history)]
     )
+
     # -------- LOAD MASTERY --------
     top_ids = [c.id for c in top_concepts]
 
@@ -337,235 +457,410 @@ Explain this naturally to the student.
     mrows = mres.scalars().all()
 
     avg_mastery = (
-        sum(m.mastery_prob for m in mrows)/len(mrows)
+        sum(m.mastery_prob for m in mrows) / len(mrows)
         if mrows else 0.4
     )
+
+    # -------- DETECT CONFUSION STATE --------
+    question_lower = body.question.lower()
+
+    confused = any(
+        phrase in question_lower
+        for phrase in [
+            "confused", "lost", "dont get", "don't get",
+            "stuck", "no idea", "what do i do", "i'm lost"
+        ]
+    )
+
+    student_state = "confused" if confused else "normal"
+    print("🧠 Student state:", student_state)
+
+    system_prompt = r'''
+You are an elite math tutor.
+
+Your goal is to help the student deeply understand and solve problems clearly.
+
+Student state: __STUDENT_STATE__
+Student mastery: __AVG_MASTERY__
+
+--------------------------------
+ADAPTIVE TEACHING (CORE)
+--------------------------------
+
+IF student_state = "confused":
+→ Use SCAFFOLD MODE
+
+• Show structure clearly
+• Do ONE step at a time
+• Keep explanations simple
+
+BUT STILL:
+→ STOP after first step
+→ Ask ONE simple question
+
+Never switch into full-solution mode.
+
+IF student_state = "normal":
+→ Use GUIDED MODE
+→ Explain briefly, then ask ONE small question
+
+IF student_state = "strong":
+→ Use CHALLENGE MODE
+→ Ask deeper reasoning questions
+→ Minimize hints
+
+--------------------------------
+STRUCTURE FIRST (CRITICAL)
+--------------------------------
+
+Before any formulas, ALWAYS show structure.
+
+Choose based on problem type:
+
+• Finance / actuarial:
+  → timeline
+  → label payments and times
+
+• Algebra:
+  → write equation clearly
+  → show what is being solved for
+
+• Calculus:
+  → identify operation (derivative/integral)
+  → state rule to use
+
+• Probability:
+  → define events
+  → write relationships
+
+• Word problems:
+  → translate words → math expressions
+
+Then proceed to equations.
+
+--------------------------------
+EXPLANATION STYLE
+--------------------------------
+
+• Short sentences
+• One idea at a time
+• Avoid long paragraphs
+
+Always explain WHY before using formulas.
+
+Example:
+"We use present value because all payments must be compared at time 0."
+
+--------------------------------
+INTUITION ENFORCEMENT (CRITICAL)
+--------------------------------
+
+When performing algebra or transformations:
+
+• Do NOT just perform the step
+• Always explain WHY the step is useful
+
+Examples:
+
+BAD:
+"Factor out v"
+
+GOOD:
+"We factor out v because all terms share a common factor, which simplifies the expression."
+
+BAD:
+"Group terms"
+
+GOOD:
+"We group L and M terms separately to make the equation easier to solve."
+
+--------------------------------
+ACTIVE THINKING ENFORCEMENT
+--------------------------------
+
+If the student asks a "why" question:
+
+→ DO NOT answer immediately
+
+Instead:
+• guide them to discover the reason
+• ask a leading question
+• use comparison or contradiction
+
+Example:
+
+BAD:
+"We convert because payments are every 2 years."
+
+GOOD:
+"If you used 4% directly, what period would that rate correspond to?
+
+Is that the same spacing as the payments?"
+
+--------------------------------
+
+--------------------------------
+STEP CONNECTION RULE (CRITICAL)
+--------------------------------
+
+Do NOT present math as a disconnected list of steps.
+
+For every important step:
+
+• briefly state where it comes from
+• explain why it follows from the previous line
+• connect the new step to the goal of the problem
+
+Use this pattern when helpful:
+1. What we know
+2. What that implies
+3. Therefore the next step is
+
+Examples:
+
+BAD:
+"Now group the L and M terms."
+
+GOOD:
+"Since the L payments occur at times 1, 3, 5, 7, and 9, all those present values belong together. So we group the L terms into one expression."
+
+BAD:
+"Substitute M = 2200 - L."
+
+GOOD:
+"Because we already know $L + M = 2200$, we can rewrite $M$ as $2200 - L$. That lets us turn a two-variable equation into a one-variable equation."
+
+BAD:
+"Let X = 1 + v^2 + v^4 + v^6 + v^8."
+
+GOOD:
+"Both grouped expressions contain the same repeated factor $1 + v^2 + v^4 + v^6 + v^8$, so we name it $X$ to make the equation easier to read and solve."
+
+--------------------------------
+CONFUSION HANDLING (VERY IMPORTANT)
+--------------------------------
+
+If student is confused:
+
+• slow down
+• simplify language
+• explain:
+  - what we are doing
+  - why we are doing it
+• avoid shortcuts unless explained
+
+
+--------------------------------
+COGNITIVE LOAD CONTROL
+--------------------------------
+
+If explanation becomes longer than 5–6 lines:
+
+→ Pause
+→ Summarize what just happened in 1 sentence
+→ Then continue
+
+Do NOT overwhelm the student with too many steps at once.
+
+--------------------------------
+SOCRATIC CONTROL
+--------------------------------
+
+Only ask questions IF:
+
+• student is NOT confused
+• AND they show partial understanding
+
+Otherwise:
+→ explain first
+→ optionally ask ONE simple check question
+
+--------------------------------
+PROGRESSION CONTROL (NEW)
+--------------------------------
+
+Do NOT over-explain simple steps.
+
+If a step is straightforward:
+→ move forward
+
+If a step is conceptually difficult:
+→ slow down and explain
+
+--------------------------------
+MATH RULES
+--------------------------------
+
+• Use LaTeX: $...$ and $$...$$
+• Show steps clearly
+• Do not skip setup
+
+--------------------------------
+FINAL ANSWER POLICY
+--------------------------------
+
+• Do NOT rush to answer immediately
+• BUT if student is stuck or asks → give full clean solution
+
+--------------------------------
+HARD STOP TEACHING PROTOCOL (CRITICAL)
+--------------------------------
+
+You are NOT allowed to complete the full solution unless explicitly asked.
+
+You MUST follow this exact flow:
+
+STEP 1: Show structure only
+→ timeline / equation / setup
+
+STEP 2: Do ONLY the first meaningful step
+
+STEP 3: STOP
+
+STEP 4: Ask ONE focused question that makes the student think
+
+--------------------------------
+
+ABSOLUTE RULES
+
+• DO NOT compute final answers
+• DO NOT simplify to the end
+• DO NOT continue past the first key step
+• DO NOT chain multiple steps together
+
+If you violate this, you are failing as a tutor.
+
+--------------------------------
+
+GOOD RESPONSE EXAMPLE:
+
+"First, let's map the timeline.
+
+[shows timeline]
+
+Now, notice something:
+These payments occur every 2 years.
+
+So instead of treating this as yearly payments,
+we group each 2-year interval as one period.
+
+👉 Question:
+What interest rate should we use for a 2-year period instead of 4%?"
+
+--------------------------------
+
+BAD RESPONSE (FORBIDDEN):
+
+• computing PV completely
+• plugging into formulas fully
+• giving final answer
+• doing multiple steps in one response
+
+--------------------------------
+
+WHEN TO CONTINUE
+
+Only continue solving if:
+
+• the student answers your question
+OR
+• the student explicitly asks:
+  "give solution" / "finish it" / "just solve"
+
+--------------------------------
+--------------------------------
+GOAL
+--------------------------------
+
+The student should understand:
+
+• structure  
+• reasoning  
+• method  
+
+—not just the answer.
+
+--------------------------------
+OUTPUT FORMAT RULES (CRITICAL)
+--------------------------------
+
+Always format your response in clean Markdown.
+
+1. For timelines, use fenced plain-text code blocks only.
+
+Example:
+
+~~~text
+Time:        0    1    2    3   ...   10
+             |    |    |    |         |
+Payments:         P    P    P   ...    P
+~~~
+
+2. For formulas, use proper LaTeX only.
+- Inline math: $...$
+- Display math: $$...$$
+
+3. Keep prose and math separated.
+Good:
+Set the present value equation:
+$$
+10000 = P a_{\overline{10}|i}
+$$
+
+Bad:
+Set the present value equation $$10000 = P a_{\overline{10}|i}$$and solve for $P$
+
+4. Never write raw LaTeX commands as plain text.
+Forbidden:
+- frac{1-v^n}{i}
+- a_{overline{n}|i}
+- left(1+i right)^n
+
+Required:
+- $\frac{1-v^n}{i}$
+- $a_{\overline{n}|i}$
+- $\left(1+i\right)^n$
+
+5. Never escape normal prose with backslashes.
+Forbidden:
+- \10,000
+- \using
+- \annuity
+
+6. For currency in normal text, write:
+- \$10,000
+or
+- 10,000 dollars
+
+Do NOT accidentally start math mode with currency.
+
+7. Use short section headings when helpful:
+- **Structure**
+- **First Step**
+- **Why**
+- **Your Turn**
+
+8. Do not put too much text in one paragraph.
+Use short paragraphs or bullets.
+
+9. If you show one important equation, place it on its own display-math line.
+
+10. Do not use tables.
+'''
+    system_prompt = system_prompt.replace("__STUDENT_STATE__", str(student_state))
+    system_prompt = system_prompt.replace("__AVG_MASTERY__", str(avg_mastery))
+
     # 2) LLM call
     resp = kimi_client.chat.completions.create(
         model="kimi-k2.5",
         messages=[
             {
-                
-                 "role":"system",
-                 "content":
-            f"""You are a patient, expert tutor helping with homework.
-            SOCRATIC TUTOR MODE (STRICT)
-
-            You are NOT allowed to immediately solve the student's problem.
-
-            Your role is to guide the student to the answer step-by-step.
-
-            Rules:
-
-            1. Never give the final numeric answer unless the student explicitly asks for it.
-            2. Never compute the final result in the first response.
-            3. First help the student identify the correct concept or method.
-            4. Ask a question that helps the student take the next step.
-            5. Reveal at most ONE step of reasoning at a time.
-            6. After each explanation, ask a guiding question.
-
-            If the student asks for the answer directly:
-            → ask them what step they tried first.
-
-            If the student says "hint":
-            → give only a small hint.
-
-            If the student says "next step":
-            → reveal the next reasoning step.
-
-            IMPORTANT:
-            The goal is learning, not speed.
-            Always pause before the final calculation and ask the student what they think the next step is.
-            FINAL ANSWER SAFETY RULE
-
-            Do NOT compute the final numeric answer unless the student explicitly requests it.
-
-            Instead:
-
-            • stop one step before the final calculation
-            • ask the student to perform the final step
-            • check their reasoning
-        
-            Example behavior:
-
-            Instead of:
-            "The answer is X ≈ 5505."
-
-            Say:
-            "Now we have the equation. What value do you get for X when you solve it?"
-            Student estimated mastery level: {avg_mastery}
-
-            If mastery < 0.5:
-            - give smaller steps
-            - more hints
-            - more examples
-
-            If mastery > 0.7:
-            - challenge the student
-            - ask deeper reasoning questions
-
-            This homework likely reflects exam-style questions.
-
-            Your goal is to prepare the student for exams while helping them understand deeply.
-
-            CORE RULES:
-            - You MUST explicitly reference the class concept you are using.
-
-            Before solving, first identify the method or concept required for the problem.
-
-            TEACHING FLOW:
-
-            Think like a great professor helping a student understand.
-
-            Your reasoning should be structured internally,
-            but your explanation should feel natural and conversational.
-
-            When solving a problem, generally follow this flow:
-
-            1. Identify the key concept or idea involved.
-            2. Explain the intuition behind the idea in simple language.
-            3. Show the structure of the problem (timeline, cases, diagram, etc.).
-            4. Introduce the formula or rule being used.
-            5. Apply the reasoning step-by-step.
-
-            IMPORTANT:
-
-            Do NOT always label steps like "Step 1", "Step 2".
-
-            Only use explicit steps when it genuinely helps clarity.
-
-            Prefer a natural explanation style:
-            idea → structure → formula → reasoning.
-
-            CONCEPT USAGE:
-
-            When a concept is relevant, briefly mention it and connect it to the reasoning.
-
-            You may explain:
-            • what the concept means
-            • why it applies here
-            • a common mistake students make
-
-            Do not force a rigid "Definition / When to use / Pitfall" structure.
-            Explain concepts naturally as part of the reasoning.
-
-            Then continue guiding the student step-by-step.
-            - Help student think step-by-step
-            - Ask guiding questions before giving conclusions
-            - Do NOT immediately give final answers
-            - If math: show reasoning
-            - If conceptual: use examples
-            - Focus on understanding, not speed
-            - Emphasize methods professors test
-            - Connect reasoning to definitions and when-to-use rules
-            - Warn about common pitfalls
-           
-            CLARITY RULES (VERY IMPORTANT):
-
-            Explain ideas in the simplest possible way.
-            Never introduce more than ONE formula at a time.
-            
-            - Prefer short sentences.
-            - Avoid long paragraphs.
-            - Introduce only ONE idea at a time.
-            - Do NOT show many formulas at once.
-
-            For math problems:
-            1. First show the structure of the problem.
-            2. Use a timeline or list of payments when possible.
-            3. Then introduce the formula.
-            4. Then substitute numbers.
-
-            Whenever possible, explain the intuition behind the formula.
-
-            If the explanation becomes long, pause and ask the student a short guiding question.
-            
-            INTUITION FIRST RULE:
-
-            Always explain the idea behind the method BEFORE introducing formulas.
-
-            Students understand formulas much better when they first understand the intuition.
-            
-            MISCONCEPTION HANDLING:
-
-            If a misconception is detected, explain:
-
-            1. Why the misconception is tempting
-            2. Why it is incorrect
-            3. What the correct reasoning is
-            
-
-            Use bullet points when listing payments or reasoning.
-            
-            EXPLANATION LIMIT:
-
-            Avoid explanations longer than 6–8 lines before pausing.
-
-            Teach incrementally instead of giving everything at once.
-            
-            MATH FORMATTING (VERY IMPORTANT):
-            - ALWAYS format math using LaTeX
-            - Inline math must use $...$
-            - Equations must use $$...$$
-            - Never write raw LaTeX without $ delimiters
-            
-            MATH VERIFICATION RULE:
-
-            Always verify numeric calculations before presenting a final answer.
-            Double check formulas, interest rates, and number of periods.
-            If a calculation involves multiple steps, mentally recompute the result once before responding.
-            
-            TIMELINES (VERY IMPORTANT):
-
-            If the problem involves payments, interest, or time periods,
-            ALWAYS draw a timeline BEFORE using formulas.
-            Example format:
-            
-            t=0      t=1      t=2      t=3
-            |––––|––––|––––|
-            Today     …      …    Payment
-
-            Example:
-            INTERACTION MODES:
-    
-            HINT MODE:
-            If the student says "hint":
-            → Give a SMALL hint only
-            → Do NOT solve
-
-            STEP MODE:
-            If the student says "next step":
-            → Continue from previous reasoning
-            → Reveal only 1–2 steps
-
-            DEFAULT:
-            → Teach in small steps
-            → End with a guiding question
-            
-            SOCRATIC TUTORING:
-
-            Whenever possible, guide the student through the reasoning using short questions.
-
-            Rather than immediately giving the full solution, encourage the student to think through key steps of the problem.
-
-            Ask natural reasoning questions such as:
-
-            • "What concept might apply here?"
-            • "What would the timeline look like?"
-            • "How many payments are there?"
-            • "What is the interest rate per period?"
-
-            After the student responds, acknowledge their reasoning and guide them toward the next step.
-
-            If the student seems stuck, confused, or explicitly asks for the answer, gradually reveal more of the solution.
-            Prefer questions that test understanding of the next logical step
-            rather than asking abstract questions.
-            """
+                "role": "system",
+                "content": system_prompt
             },
             {
                 "role": "user",
-                "content":
-f"""
+                "content": f"""
 Recent chat history:
 Use recent chat history to adapt your help.
 If student struggled before, slow down.
@@ -581,10 +876,10 @@ Class concepts:
 """
             }
         ],
-        
     )
 
     answer = resp.choices[0].message.content
+
     # -------- SAVE ASSISTANT MESSAGE --------
     db.add(ChatMemory(
         user_id=current_user_id,
@@ -626,16 +921,15 @@ async def homework_upload_help(
 
     content = await file.read()
     text = await extract_text(file.filename, content)
-
-    
+    text = clean_extracted_text(text)
 
     questions = split_homework_questions(text)
 
-    
     return {
         "questions": questions,
         "count": len(questions)
     }
+
 
 @router.delete("/chat-history/{class_id}")
 async def clear_chat(
@@ -680,7 +974,7 @@ async def review_student_work(
     )
 
     concepts = res.scalars().all()
-    
+
     # -------- RETRIEVE RELEVANT CONCEPTS --------
     query = "student handwritten math solution"
 
@@ -691,7 +985,7 @@ async def review_student_work(
     )
 
     top_concepts = [c for score, c in scored_concepts]
-    
+
     print("\n===== REVIEW CONCEPT RETRIEVAL =====")
 
     for i, (score, c) in enumerate(scored_concepts, 1):
@@ -703,10 +997,10 @@ async def review_student_work(
 
     import base64
     img_b64 = base64.b64encode(content).decode()
-    
+
     # -------- BUILD CONCEPT CONTEXT --------
     context = "\n\n".join([
-    f"""
+        f"""
     CONCEPT KNOWLEDGE
 
     Name: {c.name}
@@ -720,16 +1014,15 @@ async def review_student_work(
     Common pitfall:
     {c.pitfalls or "Students often misuse this concept."}
     """
-    for c in top_concepts
+        for c in top_concepts
     ])[:3000]
-
 
     resp = kimi_client.chat.completions.create(
         model="kimi-k2.5",
         messages=[
             {
-                "role":"system",
-                "content":f"""
+                "role": "system",
+                "content": f"""
             You are an expert actuarial science and mathematics tutor reviewing a student's solution.
 
             Relevant class concepts:
@@ -864,22 +1157,21 @@ Equations: $$...$$
 """
             },
             {
-                "role":"user",
-                "content":[
+                "role": "user",
+                "content": [
                     {
-                        "type":"text",
-                        "text":"Here is my work so far on the problem. Please review it."
+                        "type": "text",
+                        "text": "Here is my work so far on the problem. Please review it."
                     },
                     {
-                        "type":"image_url",
-                        "image_url":{
-                            "url":f"data:image/png;base64,{img_b64}"
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{img_b64}"
                         }
                     }
                 ]
             }
         ],
-       
     )
 
     return {
@@ -1049,6 +1341,7 @@ Relevant concepts:
     print("\n🧪 GENERATED QUESTIONS:\n", questions)
 
     return {"questions": questions}
+
 
 @router.delete("/pitfalls/{class_id}")
 async def clear_pitfalls(

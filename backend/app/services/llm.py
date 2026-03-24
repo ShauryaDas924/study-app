@@ -1,3 +1,5 @@
+
+
 import re
 import os, json
 import pathlib
@@ -11,42 +13,44 @@ with open(EXAMPLE_QUESTIONS_PATH) as f:
 
 
 NOTES_REFINEMENT_PROMPT = """
-You are an expert educator, learning scientist, and exam preparation specialist.
+You are an expert instructor, learning scientist, and exam strategist.
 
-Your task is to convert messy lecture text into HIGH-DENSITY STUDY NOTES optimized for exam review.
+Your task is to transform raw lecture content into HIGH-PRECISION, EXAM-OPTIMIZED STUDY NOTES.
 
-These notes will later be used for:
+These notes will be used downstream for:
 • concept extraction
 • flashcard generation
-• practice question generation
+• practice problem generation
+• knowledge graph construction
 
-Therefore IMPORTANT knowledge MUST NOT be lost.
-
-------------------------------------------------
-PRIMARY GOAL
-------------------------------------------------
-
-Transform messy lecture text into clear, structured, exam-ready notes while preserving ALL testable knowledge.
+Therefore, ALL testable knowledge MUST be preserved and clearly structured.
 
 ------------------------------------------------
-PRIORITIZE THESE TYPES OF INFORMATION
+PRIMARY OBJECTIVE
 ------------------------------------------------
 
-Extract and preserve:
+Convert messy lecture input into structured, highly scannable, exam-ready notes
+that maximize:
+• recall
+• conceptual clarity
+• problem-solving readiness
 
-• definitions
-• formulas and equations
-• variables and what they represent
-• rules and principles
-• frameworks or models
-• problem-solving methods
-• procedures or step-by-step techniques
-• comparisons between concepts
-• assumptions and conditions
-• interpretations of results
-• common student mistakes
-• worked examples
-• key takeaways
+------------------------------------------------
+MANDATORY CONTENT EXTRACTION
+------------------------------------------------
+
+You MUST extract and explicitly structure:
+
+• Definitions (precise, minimal, accurate)
+• Key ideas (atomic facts — ONE idea per bullet)
+• Relationships between concepts (CRITICAL)
+• Comparisons (structured differences between concepts)
+• Rules / principles
+• Processes / systems / flows
+• Conditions / assumptions
+• Examples (cleaned but faithful)
+• Common pitfalls (student mistakes)
+• Exam insights (WHY this is tested)
 
 ------------------------------------------------
 CRITICAL PRESERVATION RULES
@@ -54,79 +58,108 @@ CRITICAL PRESERVATION RULES
 
 You MUST preserve:
 
-• every formula
-• every definition
-• every named law, theorem, model, or framework
-• every step-by-step method
-• important examples that illustrate how a concept works
+• ALL definitions
+• ALL named concepts, frameworks, and systems
+• ALL examples that illustrate logic
+• ALL comparisons (explicit or implied)
+• ALL technical terminology
 
-DO NOT summarize multiple concepts into a single sentence.
+DO NOT:
+• merge multiple concepts into one
+• remove “redundant-looking” information (it may be testable)
+• simplify away important distinctions
 
-DO NOT remove technical terminology.
-
-If unsure whether something is important, KEEP it.
+When unsure → KEEP the information
 
 ------------------------------------------------
-STRUCTURE THE NOTES
+STRUCTURE (STRICT AND REPEATABLE)
 ------------------------------------------------
 
-Organize the notes using clear sections when possible:
+For EACH concept, use EXACTLY this format:
 
-Topic
+### [Concept Name]
 
 Definition
-- bullet points
+- precise, minimal, accurate
 
 Key Ideas
-- bullet points
+- one idea per bullet
+- no compound bullets
 
-Formulas
+Relationships
+- explicitly state connections to other concepts
+- e.g. "ERP eliminates data silos across enterprise processes"
+
+Processes / Mechanisms (if applicable)
+- step-by-step or system behavior
+
+Formulas (if applicable)
 - formula
 - variable meanings
-- when the formula applies
-
-Methods / Procedures
-- ordered steps
+- when it applies
 
 Examples
-- short explanation
+- simplified but logically identical
 
-Common Mistakes
-- misunderstandings students often make
+Common Pitfalls
+- what students misunderstand
+- typical confusion points
+
+Exam Insight
+- WHY professors test this
+- what kind of question it appears in
+
+------------------------------------------------
+COMPARISON RULE (MANDATORY)
+------------------------------------------------
+
+If the input includes contrasting concepts (explicitly OR implicitly),
+you MUST create a comparison section:
+
+### Comparison: [Concept A vs Concept B]
+
+- Difference in purpose
+- Difference in structure
+- Difference in usage
+- Key distinguishing features
+- Examples
+
+This is REQUIRED for:
+• structured vs dynamic processes
+• workgroup vs enterprise vs inter-enterprise
+• ERP vs MRP
+• CRM vs ERP vs EAI
 
 ------------------------------------------------
 FORMATTING RULES
 ------------------------------------------------
 
-• Convert long paragraphs into bullet points
-• Each bullet point should represent ONE idea
-• Keep sentences concise
-• Remove slide artifacts (slide numbers, headers, footers)
-• Remove decorative or repeated formatting text
-• Preserve mathematical notation exactly
+• NO paragraphs longer than 2 lines
+• Bullet = EXACTLY one idea
+• Use spacing between sections
+• Remove slide artifacts (numbers, headers, noise)
+• Preserve terminology EXACTLY as given
+• Keep wording concise but precise
 
 ------------------------------------------------
-EXAM SIGNALS
+EXAM SIGNAL HANDLING
 ------------------------------------------------
 
-If the text contains sections labeled:
-
-• review
-• summary
+If input contains:
+• learning objectives
+• review sections
 • key points
-• objectives
-• takeaways
 
-Treat each bullet point as an individual important note.
+→ treat EACH bullet as HIGH PRIORITY and preserve individually
 
 ------------------------------------------------
-QUALITY RULES
+QUALITY CONSTRAINTS
 ------------------------------------------------
 
-• Do NOT invent information.
-• Do NOT add external knowledge.
-• Only use information present in the input text.
-• Preserve conceptual accuracy.
+• DO NOT invent information
+• DO NOT add external knowledge
+• DO NOT re-interpret beyond given content
+• DO NOT skip edge cases or exceptions
 
 ------------------------------------------------
 OUTPUT FORMAT
@@ -135,9 +168,137 @@ OUTPUT FORMAT
 Return JSON ONLY:
 
 {
- "clean_notes":"structured exam-ready study notes"
+  "clean_notes": "fully structured, exam-optimized notes"
 }
 """
+
+MATH_RECONSTRUCTION_PROMPT = """
+You are an expert in actuarial mathematics, financial mathematics, and mathematical notation reconstruction.
+
+Your task is to CLEAN, REPAIR, and RECONSTRUCT corrupted mathematical lecture text into precise, readable, and logically correct notes.
+
+The input may contain:
+• OCR errors
+• broken equations
+• missing symbols
+• misordered variables
+• fragmented expressions
+• duplicated or noisy text
+
+------------------------------------------------
+PRIMARY OBJECTIVE
+------------------------------------------------
+
+Reconstruct mathematically correct, structured, and readable content
+while preserving ALL underlying meaning.
+
+------------------------------------------------
+RECONSTRUCTION RULES
+------------------------------------------------
+
+1. Rebuild equations into correct mathematical form
+2. Infer intended formulas ONLY when strongly implied
+3. Preserve ALL variables and relationships
+4. Standardize notation using actuarial conventions:
+
+• A(t) = accumulated value
+• a(t) = accumulation function
+• i = effective interest rate
+• d = effective discount rate
+• v = discount factor
+• PV = present value
+• AV = accumulated value
+
+5. Fix spacing, alignment, and structure of equations
+
+------------------------------------------------
+FORMULA HANDLING (CRITICAL)
+------------------------------------------------
+
+For each formula:
+
+• Write clean equation
+• Define ALL variables
+• State when it applies
+
+Example format:
+
+Formula
+- A(t) = k · a(t)
+
+Where:
+- A(t): accumulated value at time t
+- k: initial principal
+- a(t): accumulation function
+
+------------------------------------------------
+RELATIONSHIPS (MANDATORY)
+------------------------------------------------
+
+You MUST explicitly reconstruct key relationships such as:
+
+• i, d, v relationships
+    i = d / (1 - d)
+    v = 1 / (1 + i)
+    d = i / (1 + i)
+
+• accumulation vs discount
+• PV ↔ AV relationships
+
+------------------------------------------------
+STRUCTURE OUTPUT
+------------------------------------------------
+
+### [Concept Name]
+
+Definition
+- clean and precise
+
+Formulas
+- clean equations
+- variables defined
+- usage context
+
+Relationships
+- connections between formulas
+
+Examples
+- reconstructed clean example (if present)
+
+Notes
+- clarifications or important observations
+
+------------------------------------------------
+UNCERTAINTY HANDLING
+------------------------------------------------
+
+If a portion is unclear or corrupted:
+
+• DO NOT hallucinate
+• mark it clearly:
+
+[uncertain reconstruction]
+
+------------------------------------------------
+STRICT CONSTRAINTS
+------------------------------------------------
+
+• DO NOT invent formulas
+• DO NOT introduce external knowledge
+• DO NOT skip messy parts — attempt reconstruction
+• DO NOT leave raw corrupted text
+
+------------------------------------------------
+OUTPUT FORMAT
+------------------------------------------------
+
+Return JSON ONLY:
+
+{
+  "clean_math_notes": "fully reconstructed mathematical notes with correct notation"
+}
+"""
+
 
 def clean_note_text(text: str) -> str:
 
@@ -425,7 +586,28 @@ def booster_distributions(note_text: str, concepts: list):
 
     return concepts
     
-    
+def attach_pitfalls_to_concepts(concepts, pitfalls):
+
+    # normalize concept names
+    concept_map = {
+        normalize_concept_name(c["name"]): c
+        for c in concepts
+    }
+
+    for p in pitfalls:
+        key = normalize_concept_name(p["concept"])
+
+        if key in concept_map:
+            c = concept_map[key]
+
+            if "pitfalls" not in c:
+                c["pitfalls"] = []
+
+            # avoid duplicates
+            if p["pitfall"] not in c["pitfalls"]:
+                c["pitfalls"].append(p["pitfall"])
+
+    return list(concept_map.values())
     
 IDENTITY_PATTERN = re.compile(
     r"[a-zA-Zδλσμ]+\s*=\s*[^\n]{3,50}"
@@ -618,6 +800,98 @@ Evidence must be copied EXACTLY from the notes.
 
 If you cannot find supporting text,
 DO NOT include the concept.
+"""
+
+PITFALL_PROMPT = """
+You are an expert instructor, exam designer, and cognitive error analyst.
+
+Your task:
+Extract ONLY **real, text-grounded student mistakes and misconceptions** from the notes.
+
+------------------------------------------------
+PRIMARY OBJECTIVE
+------------------------------------------------
+
+Identify mistakes that:
+• students commonly make
+• would lead to wrong answers on exams
+• reflect misunderstanding of concepts, formulas, or conditions
+
+------------------------------------------------
+STRICT GROUNDING RULE
+------------------------------------------------
+
+You MUST ONLY extract pitfalls that are:
+
+• explicitly stated
+OR
+• strongly implied by:
+  - examples
+  - contrasts
+  - warnings
+  - edge cases
+  - conditions
+  - incorrect vs correct reasoning
+
+If you cannot find textual support → DO NOT include it.
+
+------------------------------------------------
+WHAT COUNTS AS A PITFALL
+------------------------------------------------
+
+Valid pitfalls include:
+
+• misapplying a formula
+• using a method in the wrong context
+• misunderstanding a definition
+• confusing similar concepts
+• ignoring conditions or assumptions
+• sign errors / variable misuse
+• incorrect interpretation of results
+
+------------------------------------------------
+WHAT TO IGNORE
+------------------------------------------------
+
+DO NOT include:
+
+• vague advice
+• generic study tips
+• invented mistakes
+• anything not grounded in text
+
+------------------------------------------------
+LINKING RULE (CRITICAL)
+------------------------------------------------
+
+Each pitfall MUST be tied to a specific concept.
+
+Use the SAME naming style as concept extraction:
+snake_case
+
+------------------------------------------------
+QUALITY RULES
+------------------------------------------------
+
+• Each pitfall must be concrete and testable
+• Keep descriptions short and precise (1–2 lines)
+• Prefer fewer HIGH-QUALITY pitfalls over many weak ones
+
+------------------------------------------------
+OUTPUT FORMAT
+------------------------------------------------
+
+Return JSON ONLY:
+
+{
+  "pitfalls":[
+    {
+      "concept":"snake_case_concept_name",
+      "pitfall":"clear description of the mistake",
+      "evidence":"exact phrase or sentence from the text"
+    }
+  ]
+}
 """
 
 MATH_CONCEPT_PROMPT = """
@@ -1033,6 +1307,39 @@ async def extract_concepts_from_note(note_text: str):
     ranked = semantic_dedupe(ranked)
 
     return ranked[:60]
+    
+
+async def extract_pitfalls_from_note(note_text: str):
+
+    cleaned = clean_note_text(note_text)
+
+    if not cleaned.strip():
+        return []
+
+    resp = kimi_client.chat.completions.create(
+        model="kimi-k2.5",
+        messages=[
+            {"role": "system", "content": PITFALL_PROMPT},
+            {"role": "user", "content": cleaned},
+        ],
+    )
+
+    raw = resp.choices[0].message.content
+    parsed = safe_json_loads(raw)
+
+    if not parsed or "pitfalls" not in parsed:
+        return []
+
+    # -------- GROUNDING CHECK (CRITICAL — SAME STANDARD AS CONCEPTS) --------
+    grounded = []
+
+    for p in parsed["pitfalls"]:
+        evidence = p.get("evidence", "").lower()
+
+        if evidence and evidence.strip()[:50] in cleaned.lower():
+            grounded.append(p)
+
+    return grounded
 
 async def rank_exam_importance(concepts: list[dict]):
 
@@ -1283,7 +1590,7 @@ Class concepts:
 async def generate_flashcards_from_concepts(concepts: list[dict]):
 
     resp = client.chat.completions.create(
-        model="gpt-4.1",
+        model="gpt-5.4",
         messages=[
             {
                 "role":"system",
@@ -1304,7 +1611,7 @@ RULES
 6. Avoid paraphrasing the same concept multiple times.
 7. Prefer deeper conceptual questions over surface rewording.
 8. Do NOT create multiple cards asking the same definition in different wording.
-
+9. Prefer questions that prevent mistakes over questions that repeat definitions.
 CARD TYPE MIX
 
 Across the deck maintain approximately:
@@ -1315,12 +1622,66 @@ Across the deck maintain approximately:
 10% Application cards
 5% Recognition cards
 
+DIVERSITY RULE (CRITICAL)
+
+Across the FULL deck:
+
+• At least 40% of concepts should include pitfall cards  
+• At least 40% should include decision (when-to-use) cards  
+• Avoid repeating the same card type for every concept  
+
+The goal is BALANCED understanding, not maximum quantity.
+
+CRITICAL THINKING CARDS (STRICT REQUIREMENT)
+
+For EACH concept:
+
+If a "pitfalls" field exists:
+→ You MUST generate at least ONE pitfall-based flashcard
+
+This is NOT optional.
+
+A pitfall card MUST:
+• describe a specific mistake
+• test recognition or correction of that mistake
+• be clearly tied to exam failure modes
+
+Examples:
+
+Q: What mistake do students make when applying ___?
+A: ...
+
+Q: Why is it incorrect to apply ___ in this situation?
+A: ...
+
+Q: What condition do students often ignore when using ___?
+A: ...
+
+FAILURE TO INCLUDE PITFALL CARDS = INVALID OUTPUT
+
+--------------------------------
+
+You MUST actively use:
+
+• "Common Pitfalls" → generate mistake-based cards
+• "Conditions / assumptions" → generate when-to-use cards
+• "Exam Insight" → generate decision or reasoning cards
+
+If these sections exist in the concept, you MUST convert them into flashcards.
+
 REQUIRED PER CONCEPT
 
-Generate at least:
+You MUST generate 2–3 flashcards per concept.
 
-• 1 Definition card
-• 1 Understanding card
+Across those cards, you MUST include:
+
+• At least 1 Definition OR Understanding card  
+• At least 1 deeper card (Pitfall OR Decision OR Application)
+
+Do NOT force all card types for every concept.
+Only generate what is meaningful and supported by the concept.
+
+These are NOT optional.
 
 OPTIONAL BUT PREFERRED
 
@@ -1387,7 +1748,7 @@ Return JSON ONLY:
             }
         ],
         temperature=0.2,
-        max_tokens=2000
+        max_completion_tokens=2000
     )
 
     parsed = safe_json_loads(resp.choices[0].message.content)
