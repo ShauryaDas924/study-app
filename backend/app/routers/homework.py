@@ -1364,3 +1364,26 @@ async def clear_pitfalls(
     await db.commit()
 
     return {"status": "pitfalls cleared"}
+
+
+@router.get("/chat-history/{class_id}")
+async def get_chat_history(
+    class_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+    res = await db.execute(
+        select(ChatMemory.role, ChatMemory.content)
+        .where(
+            ChatMemory.user_id == current_user_id,
+            ChatMemory.class_id == UUID(class_id)
+        )
+        .order_by(ChatMemory.created_at.asc())
+    )
+
+    rows = res.fetchall()
+
+    return [
+        {"role": r[0], "content": r[1]}
+        for r in rows
+    ]

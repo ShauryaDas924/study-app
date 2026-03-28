@@ -1589,6 +1589,54 @@ You MUST actively use:
 • "Conditions / assumptions" → generate when-to-use cards
 • "Exam Insight" → generate decision or reasoning cards
 
+PITFALL GENERATION (EXAM-GRADE)
+
+A pitfall is a HIGH-PROBABILITY exam mistake — something a student is likely to get wrong even after studying.
+
+The purpose of a pitfall card is to PREVENT losing points.
+
+A valid pitfall MUST involve one of the following:
+
+• CONFUSION — mixing this concept with a similar one  
+  (e.g., RAM vs SSD, AR vs VR)
+
+• MISAPPLICATION — using the concept in the wrong situation  
+  (e.g., applying a method when conditions do not hold)
+
+• MISSING CONDITION — ignoring a required assumption or constraint  
+
+• OVERSIMPLIFICATION — using a vague or incomplete definition that leads to incorrect answers  
+
+PITFALL QUALITY CHECK (MANDATORY)
+
+Only generate a pitfall if:
+
+• A student could realistically make this mistake on an exam  
+• The mistake would lead to choosing a wrong answer  
+• The pitfall clarifies a boundary, contrast, or condition  
+
+If not, DO NOT generate a pitfall.
+
+PREFERRED PITFALL TYPES
+
+• Contrast traps (X vs Y differences)  
+• “When this fails” scenarios  
+• Hidden assumption errors  
+• Subtle definition traps  
+
+WEAK PITFALLS (DO NOT GENERATE)
+
+• “Students forget this”  
+• “Be careful with ___”  
+• Anything that does not lead to a concrete wrong answer  
+
+GOOD PITFALL FORMATS
+
+Q: What mistake do students make when using ___?  
+Q: What concept is commonly confused with ___?  
+Q: When is it incorrect to apply ___?  
+Q: What condition is often ignored when using ___?
+
 Examples:
 
 Q: What mistake do students make when applying ___?
@@ -1608,11 +1656,18 @@ You MUST generate 2–3 flashcards per concept.
 
 Across those cards, you MUST include:
 
-• At least 1 Definition OR Understanding card  
+• EXACTLY 1 Definition OR core identification card (MANDATORY anchor) 
 • At least 1 deeper card (Pitfall OR Decision OR Application)
 
 Do NOT force all card types for every concept.
 Only generate what is meaningful and supported by the concept.
+
+DEFINITION QUALITY RULE
+
+A definition card must:
+• Clearly state what the concept IS (not just describe behavior)
+• Be answerable in ≤2 lines
+• Be testable as a direct exam-style question
 
 These are NOT optional.
 
@@ -1701,7 +1756,7 @@ Return JSON ONLY:
 async def generate_math_flashcards_from_concepts(concepts: list[dict]):
 
     resp = client.chat.completions.create(
-        model="gpt-4.1",
+        model="gpt-5.4",
         messages=[
             {
                 "role": "system",
@@ -1743,12 +1798,26 @@ CARD TYPES
 
 Across the deck maintain approximately:
 
-30% Formula Recall
-25% Formula Selection
+20% Formula Recall
+30% Formula Selection (PRIMARY)
 20% Concept Understanding
-15% Pattern Recognition
-5% Method Identification
-5% Common Pitfall
+10% Pattern Recognition
+10% Pitfalls (MANDATORY)
+10% Method Identification
+
+--------------------------------
+EXAM FAILURE PREVENTION (CRITICAL)
+--------------------------------
+
+You MUST generate flashcards that explicitly prevent common exam failures:
+
+1) WRONG FORMULA SELECTION
+2) MISSING CONDITIONS
+3) DOMAIN / SUPPORT ERRORS
+4) SIGN / VARIABLE MISUSE
+5) INCOMPLETE SOLUTIONS
+
+At least 40% of concepts MUST include a failure-prevention (pitfall) card.
 
 --------------------------------
 PROOF AND LOGIC CARDS
@@ -1860,6 +1929,38 @@ Prefer deeper conceptual questions rather than trivial recall.
 Answers must be **short (1–2 lines)**.
 
 --------------------------------
+PER CONCEPT STRUCTURE (MANDATORY)
+--------------------------------
+
+For EACH concept, you MUST generate:
+
+• EXACTLY 1 core anchor card:
+  - either formula recall OR core identification
+
+AND
+
+• At least 1 deeper card:
+  - formula selection OR pitfall OR multi-step reasoning
+
+Do NOT generate only recall-based cards.
+
+Each concept MUST include depth.
+
+--------------------------------
+PRIORITY ORDER
+--------------------------------
+
+If limited information is available, prioritize:
+
+1) Formula selection (HIGHEST)
+2) Pitfalls / failure prevention
+3) Conditions / assumptions
+4) Multi-step reasoning
+5) Formula recall (LOWEST)
+
+The goal is EXAM PERFORMANCE, not memorization.
+
+--------------------------------
 VARIABLE INTERPRETATION RULE
 --------------------------------
 
@@ -1881,6 +1982,41 @@ Create flashcards testing:
 • variable meaning
 • conditions of validity
 • typical application scenarios
+
+--------------------------------
+FORMULA DECISION RULE (CRITICAL)
+--------------------------------
+
+For EACH important formula, you MUST generate at least one card that tests:
+
+• WHEN to use the formula
+• WHEN NOT to use it
+• What alternative method might be confused with it
+
+--------------------------------
+MULTI-STEP THINKING RULE
+--------------------------------
+
+If a concept is used in multi-step problems:
+
+Generate at least one card that tests:
+
+• sequence of reasoning
+• first step identification
+• intermediate reasoning
+
+These simulate real exam problem solving.
+
+
+--------------------------------
+TRAP PRIORITY RULE
+--------------------------------
+
+If concepts are similar:
+
+You MUST generate confusion/comparison cards.
+
+These are HIGH PRIORITY for exam performance.
 
 --------------------------------
 PATTERN RECOGNITION RULE
@@ -1961,7 +2097,7 @@ Return JSON ONLY:
             }
         ],
         temperature=0.2,
-        max_tokens=2000
+        max_completion_tokens=2000
     )
 
     parsed = safe_json_loads(resp.choices[0].message.content)

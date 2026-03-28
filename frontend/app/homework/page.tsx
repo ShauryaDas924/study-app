@@ -23,6 +23,43 @@ export default function HomeworkPage() {
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+useEffect(() => {
+  if (!classId) return;
+
+  const saved = localStorage.getItem(`chat_${classId}`);
+  if (saved) {
+    setMessages(JSON.parse(saved));
+  }
+}, [classId]);
+
+useEffect(() => {
+  async function loadChat() {
+    if (!classId) return;
+
+    const res = await fetch(
+      `http://localhost:8000/homework/chat-history/${classId}`
+    );
+
+    const data = await res.json();
+
+    // ✅ ONLY overwrite if backend actually has data
+    if (data.length > 0) {
+      setMessages(data);
+    }
+  }
+
+  loadChat();
+}, [classId]);
+
+useEffect(() => {
+  if (classId) {
+    localStorage.setItem(
+      `chat_${classId}`,
+      JSON.stringify(messages)
+    );
+  }
+}, [messages, classId]);
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);

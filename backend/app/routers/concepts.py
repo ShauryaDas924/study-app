@@ -5,12 +5,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import StreamingResponse
 import csv
 import io
+from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy import select, func
+from sqlalchemy.dialects.postgresql import insert
 from uuid import UUID
 from app.services.llm import embed_text
 from app.db import get_db
 from app.services.llm import client
-from app.models import Note, Concept, NoteConcept, Flashcard, FlashcardState, Mastery
+from app.models import Note, Concept, NoteConcept, Flashcard, FlashcardState, Mastery, FlashcardSession
 from app.services.auth import get_current_user_id
 from app.services.llm import (
     extract_concepts_from_note,
@@ -426,5 +429,100 @@ async def review_flashcard(
         else:
             m.mastery_prob = max(0.05, m.mastery_prob - 0.07)
     await db.commit()
+
+    return {"ok": True}
+
+
+@router.get("/flashcards/session/{note_id}")
+async def get_flashcard_session(
+    note_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id)
+):
+    session = await db.get(
+        FlashcardSession,
+        {"user_id": user_id, "note_id": note_id}
+    )
+
+    if not session:
+        return {
+            "index": 0,
+            "mode": "normal",
+            "deck_ids": [],
+            "all_deck_ids": [],
+            "hard_ids": [],
+            "medium_ids": [],
+        }
+
+    return {
+        "index": session.current_index,
+        "mode": session.mode or "normal",
+        "deck_ids": session.deck_ids or [],
+        "all_deck_ids": session.all_deck_ids or [],
+        "hard_ids": session.hard_ids or [],
+        "medium_ids": session.medium_ids or [],
+    }
+    
+
+
+class SessionUpdate(BaseModel):
+    index: int
+    mode: str | None = "normal"
+    deck_ids: list[str] = Field(default_factory=list)
+    all_deck_ids: list[str] = Field(default_factory=list)
+    hard_ids: list[str] = Field(default_factory=list)
+    medium_ids: list[str] = Field(default_factory=list)
+
+
+@router.post("/flashcards/session/{note_id}")
+async def update_flashcard_session(
+    note_id: UUID,
+    payload: SessionUpdate,
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id)
+):
+    stmt = insert(FlashcardSession).values(
+        user_id=user_id,
+        note_id=note_id,
+        current_index=payload.index,
+        mode=payload.mode,
+        deck_ids=payload.deck_ids,
+        all_deck_ids=payload.all_deck_ids,
+        hard_ids=payload.hard_ids,
+        medium_ids=payload.medium_ids,
+    )
+
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["user_id", "note_id"],
+        set_={
+            "current_index": payload.index,
+            "mode": payload.mode,
+            "deck_ids": payload.deck_ids,
+            "all_deck_ids": payload.all_deck_ids,
+            "hard_ids": payload.hard_ids,
+            "medium_ids": payload.medium_ids,
+            "updated_at": func.now(),
+        }
+    )
+
+    await db.execute(stmt)
+    await db.commit()
+
+    return {"ok": True}
+
+@router.delete("/flashcards/session/{note_id}")
+async def clear_flashcard_session(
+    note_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id)
+):
+    session = await db.get(
+        FlashcardSession,
+        {"user_id": user_id, "note_id": note_id}
+    )
+
+    if session:
+        await db.delete(session)
+        await db.commit()
 
     return {"ok": True}

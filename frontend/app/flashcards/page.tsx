@@ -35,7 +35,14 @@ type SessionPayload = {
   mediumPile: Card[];
   mode: Mode;
 };
-
+type BackendSessionPayload = {
+  index: number;
+  mode: Mode;
+  deck_ids: string[];
+  all_deck_ids: string[];
+  hard_ids: string[];
+  medium_ids: string[];
+};
 function shuffle<T>(array: T[]): T[] {
   const arr = [...array];
   for (let j = arr.length - 1; j > 0; j--) {
@@ -58,7 +65,10 @@ function loadSession(key: string): SessionPayload | null {
     return null;
   }
 }
-
+function reorderByIds(allCards: Card[], ids: string[]): Card[] {
+  const map = new Map(allCards.map((c) => [c.id, c]));
+  return ids.map((id) => map.get(id)).filter(Boolean) as Card[];
+}
 export default function FlashcardsPage() {
   const classId = useStore((s) => s.selectedClassId);
   const noteId = useStore((s) => s.selectedNoteId);
@@ -68,7 +78,7 @@ export default function FlashcardsPage() {
   const [cards, setCards] = useState<Card[]>([]);
   const [i, setI] = useState(0);
   const [show, setShow] = useState(false);
-
+const [allCards, setAllCards] = useState<Card[]>([]);
   const [hardPile, setHardPile] = useState<Card[]>([]);
   const [mediumPile, setMediumPile] = useState<Card[]>([]);
   const [mode, setMode] = useState<Mode>("normal");
@@ -85,7 +95,7 @@ const [speedScore, setSpeedScore] = useState(0);
 
   // ✅ prevents spam / strict-mode double fetch
   const lastLoadedNoteId = useRef<string | undefined>(undefined);
-
+const timerRef = useRef<NodeJS.Timeout | null>(null);
   const sessionKey = useMemo(() => {
     return noteId ? `flashcards_session_${noteId}` : "";
   }, [noteId]);
@@ -121,7 +131,27 @@ const [speedScore, setSpeedScore] = useState(0);
       cancelled = true;
     };
   }, [classId, noteId, setSelectedNoteId]);
+useEffect(() => {
+  if (!noteId) return;
+  if (!cards.length) return;
 
+  const payload = {
+    index: i,
+    mode,
+    deck_ids: cards.map((c) => c.id),
+    all_deck_ids: allCards.map((c) => c.id),
+    hard_ids: hardPile.map((c) => c.id),
+    medium_ids: mediumPile.map((c) => c.id),
+  };
+
+  fetch(`http://localhost:8000/notes/flashcards/session/${noteId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).catch((e) => {
+    console.error("Failed to save backend session", e);
+  });
+}, [noteId, i, mode, cards, allCards, hardPile, mediumPile]);
   // ---------------------------------
   // 2) LOAD DECK ON NOTE CHANGE (ONCE)
   // ---------------------------------
@@ -134,18 +164,7 @@ const [speedScore, setSpeedScore] = useState(0);
     lastLoadedNoteId.current = noteId;
 
     // try restore session per-note
-    const saved = loadSession(sessionKey);
-    if (saved && saved.cards?.length) {
-      setCards(saved.cards);
-      setI(Math.min(saved.index ?? 0, Math.max(saved.cards.length - 1, 0)));
-      setHardPile(saved.hardPile ?? []);
-      setMediumPile(saved.mediumPile ?? []);
-      setMode(saved.mode ?? "normal");
-      setShow(false);
-      setError(null);
-      setLoading(false);
-      return;
-    }
+   
 
     void loadFreshDeck(noteId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -166,57 +185,123 @@ const [speedScore, setSpeedScore] = useState(0);
       mode,
     });
   }, [noteId, sessionKey, cards, i, hardPile, mediumPile, mode]);
-
+useEffect(() => {
+  return () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
+  };
+}, []);
   // ----------------------------
   // LOAD FRESH DECK (API)
   // ----------------------------
-  async function loadFreshDeck(nid: string) {
-    setLoading(true);
-    setError(null);
+ // ----------------------------
+// LOAD FRESH DECK (API)
+// ----------------------------
+async function loadFreshDeck(nid: string) {
+  setLoading(true);
+  setError(null);
 
-    try {
-      const res = await fetch(`http://localhost:8000/notes/flashcards/by-note/${nid}`);
+  try {
+    const [cardsRes, sessionRes] = await Promise.all([
+      fetch(`http://localhost:8000/notes/flashcards/by-note/${nid}`),
+      fetch(`http://localhost:8000/notes/flashcards/session/${nid}`),
+    ]);
 
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(`Flashcards API error ${res.status}: ${t}`);
-      }
-
-      const json = (await res.json()) as unknown;
-      const data: ApiFlashcard[] = Array.isArray(json) ? (json as ApiFlashcard[]) : [];
-
-      const mapped: Card[] = data.map((c) => ({
-        id: String(c.id ?? crypto.randomUUID()),
-        question: String(c.question ?? ""),
-        answer: String(c.answer ?? ""),
-        confidence: Number(c.confidence ?? 0.5),
-      }));
-
-      const shuffled = shuffle(mapped);
-
-      setCards(shuffled);
-      setI(0);
-      setShow(false);
-      setHardPile([]);
-      setMediumPile([]);
-      setMode("normal");
-
-      // save per-note session even if empty deck
-      saveSession(sessionKey, {
-        cards: shuffled,
-        index: 0,
-        hardPile: [],
-        mediumPile: [],
-        mode: "normal",
-      });
-    } catch (err: any) {
-      console.error(err);
-      setCards([]);
-      setError(err?.message ?? "Failed to load flashcards");
-    } finally {
-      setLoading(false);
+    if (!cardsRes.ok) {
+      const t = await cardsRes.text();
+      throw new Error(`Flashcards API error ${cardsRes.status}: ${t}`);
     }
+
+    const cardsJson = (await cardsRes.json()) as unknown;
+    const data: ApiFlashcard[] = Array.isArray(cardsJson) ? (cardsJson as ApiFlashcard[]) : [];
+
+    const mapped: Card[] = data.map((c) => ({
+      id: String(c.id ?? crypto.randomUUID()),
+      question: String(c.question ?? ""),
+      answer: String(c.answer ?? ""),
+      confidence: Number(c.confidence ?? 0.5),
+    }));
+
+    let session: BackendSessionPayload | null = null;
+    if (sessionRes.ok) {
+      session = (await sessionRes.json()) as BackendSessionPayload;
+    }
+
+   if (session && Array.isArray(session.deck_ids) && session.deck_ids.length > 0) {
+  const restoredAll =
+    Array.isArray(session.all_deck_ids) && session.all_deck_ids.length > 0
+      ? reorderByIds(mapped, session.all_deck_ids)
+      : mapped;
+
+  const restoredCards = reorderByIds(mapped, session.deck_ids);
+  const restoredHard = reorderByIds(mapped, session.hard_ids ?? []);
+  const restoredMedium = reorderByIds(mapped, session.medium_ids ?? []);
+
+  const finalAllCards = restoredAll.length ? restoredAll : mapped;
+  const finalCards = restoredCards.length ? restoredCards : shuffle(finalAllCards);
+  const finalIndex = Math.min(
+    session.index ?? 0,
+    Math.max(finalCards.length - 1, 0)
+  );
+  const finalMode: Mode = session.mode ?? "normal";
+
+  setAllCards(finalAllCards);
+  setCards(finalCards);
+  setHardPile(restoredHard);
+  setMediumPile(restoredMedium);
+  setMode(finalMode);
+  setI(finalIndex);
+  setShow(false);
+
+  saveSession(sessionKey, {
+    cards: finalCards,
+    index: finalIndex,
+    hardPile: restoredHard,
+    mediumPile: restoredMedium,
+    mode: finalMode,
+  });
+
+  return;
+}
+
+const saved = loadSession(sessionKey);
+if (saved && saved.cards?.length) {
+  setAllCards(saved.cards);
+  setCards(saved.cards);
+  setI(Math.min(saved.index ?? 0, Math.max(saved.cards.length - 1, 0)));
+  setHardPile(saved.hardPile ?? []);
+  setMediumPile(saved.mediumPile ?? []);
+  setMode(saved.mode ?? "normal");
+  setShow(false);
+  return;
+}
+
+const shuffled = shuffle(mapped);
+
+setAllCards(mapped);
+setCards(shuffled);
+setI(0);
+setShow(false);
+setHardPile([]);
+setMediumPile([]);
+setMode("normal");
+
+saveSession(sessionKey, {
+  cards: shuffled,
+  index: 0,
+  hardPile: [],
+  mediumPile: [],
+  mode: "normal",
+});
+  } catch (err: any) {
+    console.error(err);
+    setCards([]);
+    setError(err?.message ?? "Failed to load flashcards");
+  } finally {
+    setLoading(false);
   }
+}
 
   function reshuffleRemaining() {
     const remaining = cards.slice(i);
@@ -225,18 +310,28 @@ const [speedScore, setSpeedScore] = useState(0);
   }
 
 function startSpeedMode() {
+  // 🔥 clear old timer first
+  if (timerRef.current) {
+    clearInterval(timerRef.current);
+  }
+
   setMode("speed");
-setCards(shuffle(cards));
+
+  // 🔥 FIX 2 also here (functional state)
+  setCards((prev) => shuffle(prev));
+
   setSpeedScore(0);
   setSpeedTime(60);
   setI(0);
   setShow(false);
 
-  const timer = setInterval(() => {
+  timerRef.current = setInterval(() => {
     setSpeedTime((t) => {
       if (t <= 1) {
-        clearInterval(timer);
-        alert(`⚡ Speed round finished!`);
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+        }
+        alert("⚡ Speed round finished!");
         setMode("normal");
         return 0;
       }
@@ -246,7 +341,7 @@ setCards(shuffle(cards));
 }
 
 function startExamMode() {
-  const examCards = shuffle(cards).slice(0, 25);
+ const examCards = shuffle([...cards]).slice(0, 25);
 setHardPile([]);
 setMediumPile([]);
   setCards(examCards);
@@ -270,21 +365,32 @@ function startSurvivalMode() {
 }
 function returnToNormalMode() {
   setMode("normal");
+  setCards(shuffle(allCards));
   setI(0);
   setShow(false);
 
-  // reset special mode states
   setStreak(0);
   setLives(3);
   setSpeedScore(0);
 }
 
-  function clearSession() {
-    if (!sessionKey) return;
-    localStorage.removeItem(sessionKey);
-    lastLoadedNoteId.current = undefined; // allow reload
-    if (noteId) void loadFreshDeck(noteId);
+  async function clearSession() {
+  if (!sessionKey || !noteId) return;
+
+  localStorage.removeItem(sessionKey);
+
+  try {
+    await fetch(`http://localhost:8000/notes/flashcards/session/${noteId}`, {
+      method: "DELETE",
+    });
+  } catch (e) {
+    console.error("Failed to clear backend session", e);
   }
+setAllCards([]);
+  lastLoadedNoteId.current = undefined;
+  void loadFreshDeck(noteId);
+}
+// 🔥 LOAD SESSION FROM BACKEND
 
   function finishSession() {
     alert("🎉 All reviews complete!");

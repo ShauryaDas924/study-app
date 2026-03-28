@@ -326,3 +326,23 @@ class FlashcardState(Base):
 
     last_reviewed_at = Column(DateTime(timezone=True), nullable=True)
     due_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class FlashcardSession(Base):
+    __tablename__ = "flashcard_sessions"
+
+    user_id = Column(UUID(as_uuid=True), primary_key=True)
+    note_id = Column(UUID(as_uuid=True), primary_key=True)
+
+    current_index = Column(Integer, nullable=False, server_default=text("0"))
+
+    mode = Column(Text, nullable=True)
+
+    # exact deck order currently being studied
+    deck_ids = Column(JSONB, nullable=True)
+    all_deck_ids = Column(JSONB, nullable=True)
+    # piles
+    hard_ids = Column(JSONB, nullable=True)
+    medium_ids = Column(JSONB, nullable=True)
+
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
