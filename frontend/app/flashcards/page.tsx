@@ -30,6 +30,7 @@ type Mode =
 
 type SessionPayload = {
   cards: Card[];
+  allCards: Card[];
   index: number;
   hardPile: Card[];
   mediumPile: Card[];
@@ -92,7 +93,8 @@ const [speedTime, setSpeedTime] = useState(60);
 const [speedScore, setSpeedScore] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
+const [loadedDeckNoteId, setLoadedDeckNoteId] = useState<string | null>(null);
+const [isRestoringSession, setIsRestoringSession] = useState(false);
   // ✅ prevents spam / strict-mode double fetch
   const lastLoadedNoteId = useRef<string | undefined>(undefined);
 const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -135,6 +137,10 @@ useEffect(() => {
   if (!noteId) return;
   if (!cards.length) return;
 
+  // critical guard: do not save old deck state into a newly selected note
+  if (loadedDeckNoteId !== noteId) return;
+  if (isRestoringSession) return;
+
   const payload = {
     index: i,
     mode,
@@ -151,25 +157,32 @@ useEffect(() => {
   }).catch((e) => {
     console.error("Failed to save backend session", e);
   });
-}, [noteId, i, mode, cards, allCards, hardPile, mediumPile]);
+}, [
+  noteId,
+  loadedDeckNoteId,
+  isRestoringSession,
+  i,
+  mode,
+  cards,
+  allCards,
+  hardPile,
+  mediumPile,
+]);
   // ---------------------------------
   // 2) LOAD DECK ON NOTE CHANGE (ONCE)
   // ---------------------------------
   useEffect(() => {
-    if (!classId || !noteId) return;
-    if (!sessionKey) return;
+  if (!classId || !noteId) return;
+  if (!sessionKey) return;
 
-    // prevent refetch loop
-    if (lastLoadedNoteId.current === noteId) return;
-    lastLoadedNoteId.current = noteId;
+  if (lastLoadedNoteId.current === noteId) return;
+  lastLoadedNoteId.current = noteId;
 
-    // try restore session per-note
-   
+  setLoadedDeckNoteId(null);
+  setIsRestoringSession(true);
 
-    void loadFreshDeck(noteId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classId, noteId, sessionKey]);
-
+  void loadFreshDeck(noteId);
+}, [classId, noteId, sessionKey]);
   // ----------------------------
   // 3) SAVE SESSION (PER NOTE)
   // ----------------------------
@@ -178,12 +191,13 @@ useEffect(() => {
     if (!cards.length) return;
 
     saveSession(sessionKey, {
-      cards,
-      index: i,
-      hardPile,
-      mediumPile,
-      mode,
-    });
+  cards,
+  allCards,
+  index: i,
+  hardPile,
+  mediumPile,
+  mode,
+});
   }, [noteId, sessionKey, cards, i, hardPile, mediumPile, mode]);
 useEffect(() => {
   return () => {
@@ -246,34 +260,39 @@ async function loadFreshDeck(nid: string) {
   );
   const finalMode: Mode = session.mode ?? "normal";
 
-  setAllCards(finalAllCards);
-  setCards(finalCards);
-  setHardPile(restoredHard);
-  setMediumPile(restoredMedium);
-  setMode(finalMode);
-  setI(finalIndex);
-  setShow(false);
+ setAllCards(finalAllCards);
+setCards(finalCards);
+setHardPile(restoredHard);
+setMediumPile(restoredMedium);
+setMode(finalMode);
+setI(finalIndex);
+setShow(false);
+setLoadedDeckNoteId(nid);
+setIsRestoringSession(false);
 
   saveSession(sessionKey, {
-    cards: finalCards,
-    index: finalIndex,
-    hardPile: restoredHard,
-    mediumPile: restoredMedium,
-    mode: finalMode,
-  });
+  cards: finalCards,
+  allCards: finalAllCards,
+  index: finalIndex,
+  hardPile: restoredHard,
+  mediumPile: restoredMedium,
+  mode: finalMode,
+});
 
   return;
 }
 
 const saved = loadSession(sessionKey);
 if (saved && saved.cards?.length) {
-  setAllCards(saved.cards);
+  setAllCards(saved.allCards?.length ? saved.allCards : saved.cards);
   setCards(saved.cards);
   setI(Math.min(saved.index ?? 0, Math.max(saved.cards.length - 1, 0)));
   setHardPile(saved.hardPile ?? []);
   setMediumPile(saved.mediumPile ?? []);
   setMode(saved.mode ?? "normal");
   setShow(false);
+  setLoadedDeckNoteId(nid);
+  setIsRestoringSession(false);
   return;
 }
 
@@ -286,21 +305,26 @@ setShow(false);
 setHardPile([]);
 setMediumPile([]);
 setMode("normal");
+setLoadedDeckNoteId(nid);
+setIsRestoringSession(false);
 
 saveSession(sessionKey, {
   cards: shuffled,
+  allCards: mapped,
   index: 0,
   hardPile: [],
   mediumPile: [],
   mode: "normal",
 });
   } catch (err: any) {
-    console.error(err);
-    setCards([]);
-    setError(err?.message ?? "Failed to load flashcards");
-  } finally {
-    setLoading(false);
-  }
+  console.error(err);
+  setCards([]);
+  setError(err?.message ?? "Failed to load flashcards");
+  setLoadedDeckNoteId(null);
+  setIsRestoringSession(false);
+} finally {
+  setLoading(false);
+}
 }
 
   function reshuffleRemaining() {
