@@ -1296,6 +1296,134 @@ def normalize_concept_name(name: str):
     return name
 
 
+EXAM_META_PATTERNS = [
+    r"\bexam\b",
+    r"\bhigh[- ]yield\b",
+    r"\boften tested\b",
+    r"\bfrequently tested\b",
+    r"\bscenario[- ]based questions?\b",
+    r"\bcritical distinction for questions?\b",
+    r"\bcommon in multiple choice\b",
+    r"\bprocess questions?\b",
+    r"\btest(s|ing)? the\b",
+]
+
+EXAMPLE_PATTERNS = [
+    r"^example:",
+    r"\be\.g\.",
+    r"\bfor example\b",
+]
+
+STATISTIC_PATTERNS = [
+    r"\b\d+(\.\d+)?%\b",
+    r"\b\d+(\.\d+)?\s*(million|billion|thousand)\b",
+    r"\$\d+",
+]
+
+STEP_PATTERNS = [
+    r"\bstep\s*\d+\b",
+    r"^\d+\.",
+    r"\bfirst step\b",
+    r"\bsecond step\b",
+    r"\bthird step\b",
+]
+
+PITFALL_PATTERNS = [
+    r"\bpitfall\b",
+    r"\bcommon error\b",
+    r"\bmistake\b",
+    r"\bconfusing\b",
+    r"\bincorrect\b",
+    r"\bshould not\b",
+]
+
+
+def _matches_any(patterns: list[str], text: str) -> bool:
+    text = (text or "").lower()
+    return any(re.search(p, text, re.I) for p in patterns)
+
+
+def classify_concept_role(concept: dict) -> str:
+    """
+    Broad, domain-agnostic role assignment.
+    Works for business, science, math, humanities, etc.
+    """
+    name = concept.get("name", "")
+    desc = concept.get("description", "")
+    evidence = concept.get("evidence", "")
+    text = f"{name} {desc} {evidence}".strip()
+
+    if _matches_any(EXAM_META_PATTERNS, text):
+        return "exam_meta"
+
+    if _matches_any(PITFALL_PATTERNS, name) or _matches_any(PITFALL_PATTERNS, desc):
+        return "pitfall"
+
+    if _matches_any(STEP_PATTERNS, name) or _matches_any(STEP_PATTERNS, evidence):
+        return "process_step"
+
+    if _matches_any(EXAMPLE_PATTERNS, evidence) or _matches_any(EXAMPLE_PATTERNS, desc):
+        return "example"
+
+    # statistic-only concepts are often weak standalone flashcards
+    if _matches_any(STATISTIC_PATTERNS, evidence):
+        # if the description is mostly just a stat, mark as statistic
+        if len(desc.split()) <= 16:
+            return "statistic"
+
+    exam_score = float(concept.get("exam_score", 0.5))
+    confidence = float(concept.get("confidence", 0.5))
+    final_score = float(concept.get("final_score", 0.5))
+
+    if final_score >= 0.78 or exam_score >= 0.82 or confidence >= 0.88:
+        return "core"
+
+    return "supporting"
+
+
+def assign_card_budget(concept: dict) -> int:
+    """
+    Broad budget:
+    - 0 = do not make a standalone card
+    - 1 = one good card
+    - 2 = anchor + one deeper card
+    """
+    role = concept.get("role") or classify_concept_role(concept)
+
+    exam_score = float(concept.get("exam_score", 0.5))
+    confidence = float(concept.get("confidence", 0.5))
+    final_score = float(concept.get("final_score", 0.5))
+
+    if role == "exam_meta":
+        return 0
+
+    if role == "core":
+        return 2
+
+    if role in {"supporting", "process_step", "pitfall"}:
+        return 1
+
+    if role == "example":
+        return 1 if (exam_score >= 0.78 or final_score >= 0.75) else 0
+
+    if role == "statistic":
+        return 1 if (exam_score >= 0.82 or confidence >= 0.9) else 0
+
+    return 1
+
+
+def annotate_concepts_for_flashcards(concepts: list[dict]) -> list[dict]:
+    annotated = []
+
+    for c in concepts:
+        c = dict(c)
+        c["role"] = classify_concept_role(c)
+        c["card_budget"] = assign_card_budget(c)
+        annotated.append(c)
+
+    return annotated
+
+
 async def extract_concepts_from_note(note_text: str):
     cleaned = clean_note_text(note_text)
 
@@ -1379,7 +1507,8 @@ async def extract_concepts_from_note(note_text: str):
         if c.get("exam_score", 0) >= 0.28 or c.get("confidence", 0) >= 0.72
     ]
 
-    ranked = semantic_dedupe(ranked, threshold=0.96)
+    ranked = semantic_dedupe(ranked, threshold=0.93)
+    ranked = annotate_concepts_for_flashcards(ranked)
 
     return ranked[:100]
     
@@ -1463,6 +1592,16 @@ async def extract_math_concepts_from_note(note_text: str):
 
     concepts = list({c["name"]: c for c in concepts}.values())
     ranked = await rank_exam_importance(concepts)
+
+    for c in ranked:
+        c["final_score"] = (
+            0.55 * c.get("confidence", 0.5)
+            + 0.45 * c.get("exam_score", 0.5)
+        )
+
+    ranked = semantic_dedupe(ranked, threshold=0.94)
+    ranked = annotate_concepts_for_flashcards(ranked)
+
     return ranked[:80]
 
 async def generate_one_question(concepts: list, difficulty: int, subject_tag: str, context_blob="", concept_details: list | None = None):
@@ -1642,178 +1781,357 @@ async def generate_flashcards_from_concepts(concepts: list[dict]):
                 {
                 "role":"system",
                 "content":"""
-You are an expert learning scientist and educator.
+You are an expert learning scientist, educator, and exam designer.
 
 Create HIGH-QUALITY atomic flashcards.
 
 Follow the MINIMUM INFORMATION PRINCIPLE used by Anki.
 
-RULES
+--------------------------------
+PRIMARY GOAL
+--------------------------------
 
-1. Each flashcard must test ONE meaningful concept.
+Build the SMALLEST high-quality deck that still preserves BROAD and DEEP coverage of the notes.
+
+Do NOT maximize card count.
+Maximize:
+• learning value per card
+• exam performance
+• conceptual clarity
+• mistake prevention
+• efficient review
+
+Each concept may include:
+• role
+• card_budget
+• description
+• definition
+• when_to_use
+• pitfalls
+• evidence
+• confidence
+
+You MUST obey card_budget strictly.
+
+--------------------------------
+CORE LEARNING RULES
+--------------------------------
+
+1. Each flashcard must test ONE meaningful concept or decision point.
 2. Do NOT split a definition into trivial micro-questions.
-3. Prefer ONE strong definition card over several tiny fragments.
+3. Prefer ONE strong card over several weak or overlapping cards.
 4. Answers must be SHORT (1–2 lines max).
-5. Generate between 3 and 5 flashcards per concept.
-6. Avoid paraphrasing the same concept multiple times.
-7. Prefer deeper conceptual questions over surface rewording.
-8. Do NOT create multiple cards asking the same definition in different wording.
-9. Prefer questions that prevent mistakes over questions that repeat definitions.
-CARD TYPE MIX
+5. Avoid paraphrasing the same concept multiple times.
+6. Prefer deeper conceptual questions over surface rewording.
+7. Do NOT create multiple cards asking the same definition in different wording.
+8. Prefer questions that prevent mistakes over questions that merely restate notes.
+9. Do NOT force a card if the concept is weak, redundant, example-only, or low-value.
+10. Do NOT exceed the allowed budget for any concept.
 
-Across the deck maintain approximately:
+--------------------------------
+CARD BUDGET RULES (MANDATORY)
+--------------------------------
 
-35% Definition cards
-30% Understanding cards
-20% Comparison cards
-10% Application cards
-5% Recognition cards
+For EACH concept:
 
-DIVERSITY RULE (CRITICAL)
+• If card_budget = 0:
+  Generate NO standalone card.
 
-Across the FULL deck:
+• If card_budget = 1:
+  Generate EXACTLY 1 strong card.
 
-• At least 40% of concepts should include pitfall cards  
-• At least 40% should include decision (when-to-use) cards  
-• Avoid repeating the same card type for every concept  
+• If card_budget = 2:
+  Generate EXACTLY 2 cards:
+  1) EXACTLY 1 anchor card
+  2) EXACTLY 1 deeper card
+
+Never exceed card_budget.
+
+If a concept is supporting rather than core, usually generate only one compact, high-value card.
+
+--------------------------------
+ANCHOR VS DEEPER CARD RULE
+--------------------------------
+
+ANCHOR CARD:
+A core memory-stabilizing card.
+
+Valid anchor types:
+• definition
+• core identification
+• key distinction
+• framework recognition
+• process step identification
+• formula recognition (if applicable)
+
+DEEPER CARD:
+A card that improves exam decision-making or prevents errors.
+
+Valid deeper types:
+• pitfall
+• when-to-use
+• when-NOT-to-use
+• condition / assumption
+• comparison
+• application
+• scenario recognition
+• mechanism / interpretation
+
+If card_budget = 2, the second card should almost always be the deeper card.
+
+--------------------------------
+CARD TYPE MIX (DECK LEVEL)
+--------------------------------
+
+Across the FULL deck, aim approximately for:
+
+• 25–35% Definition / Core Identification
+• 20–30% Understanding / Mechanism
+• 15–25% Comparison / Distinction
+• 10–20% Application / Scenario
+• 10–20% Pitfall / When-to-use / Condition
+• 0–10% Recognition
+
+These are deck-level tendencies, not per-concept requirements.
+
+Do NOT force all card types for every concept.
 
 The goal is BALANCED understanding, not maximum quantity.
 
-CRITICAL THINKING CARDS (MANDATORY)
+--------------------------------
+DIVERSITY RULE
+--------------------------------
 
-You MUST actively use:
+Across the FULL deck:
 
-• "Common Pitfalls" → generate mistake-based cards
-• "Conditions / assumptions" → generate when-to-use cards
-• "Exam Insight" → generate decision or reasoning cards
+• Use pitfall cards when they prevent REAL wrong answers
+• Use decision / when-to-use cards when conditions matter
+• Avoid repeating the same card type for concept after concept
+• Do not overproduce definition cards if a deeper card would teach more
 
+--------------------------------
+CRITICAL THINKING CARDS
+--------------------------------
+
+You MUST actively use these fields when they are meaningful and grounded:
+
+• "pitfalls" → generate concrete mistake-prevention cards
+• "when_to_use" → generate decision / condition cards
+• evidence → generate grounded cards with real distinctions
+• definition → generate anchor cards when needed
+
+If the concept payload includes a pitfall or usage boundary,
+prefer converting that into a strong card rather than producing another shallow definition card.
+
+--------------------------------
 PITFALL GENERATION (EXAM-GRADE)
+--------------------------------
 
-A pitfall is a HIGH-PROBABILITY exam mistake — something a student is likely to get wrong even after studying.
+A pitfall is a HIGH-PROBABILITY mistake that would realistically cause a student to lose points.
 
-The purpose of a pitfall card is to PREVENT losing points.
+A valid pitfall usually involves one of:
 
-A valid pitfall MUST involve one of the following:
+• CONFUSION — mixing this concept with a similar one
+• MISAPPLICATION — using the concept in the wrong situation
+• MISSING CONDITION — ignoring a required assumption or boundary
+• OVERSIMPLIFICATION — using a vague definition that leads to wrong answers
+• MISINTERPRETATION — drawing the wrong meaning from the concept
 
-• CONFUSION — mixing this concept with a similar one  
-  (e.g., RAM vs SSD, AR vs VR)
+Only generate a pitfall card if:
 
-• MISAPPLICATION — using the concept in the wrong situation  
-  (e.g., applying a method when conditions do not hold)
+• a student could realistically make this mistake
+• the mistake would lead to a wrong answer or wrong method
+• the pitfall clarifies a boundary, contrast, or condition
 
-• MISSING CONDITION — ignoring a required assumption or constraint  
-
-• OVERSIMPLIFICATION — using a vague or incomplete definition that leads to incorrect answers  
-
-PITFALL QUALITY CHECK (MANDATORY)
-
-Only generate a pitfall if:
-
-• A student could realistically make this mistake on an exam  
-• The mistake would lead to choosing a wrong answer  
-• The pitfall clarifies a boundary, contrast, or condition  
-
-If not, DO NOT generate a pitfall.
+If not, DO NOT generate a pitfall card.
 
 PREFERRED PITFALL TYPES
 
-• Contrast traps (X vs Y differences)  
-• “When this fails” scenarios  
-• Hidden assumption errors  
-• Subtle definition traps  
+• contrast traps
+• “when this fails” scenarios
+• hidden assumption errors
+• subtle definition traps
+• wrong-application traps
 
 WEAK PITFALLS (DO NOT GENERATE)
 
-• “Students forget this”  
-• “Be careful with ___”  
-• Anything that does not lead to a concrete wrong answer  
+• “students forget this”
+• “be careful with ___”
+• vague warnings with no concrete failure mode
 
 GOOD PITFALL FORMATS
 
-Q: What mistake do students make when using ___?  
-Q: What concept is commonly confused with ___?  
-Q: When is it incorrect to apply ___?  
+Q: What mistake do students make when using ___?
+Q: What concept is commonly confused with ___?
+Q: When is it incorrect to apply ___?
 Q: What condition is often ignored when using ___?
 
-Examples:
+--------------------------------
+ROLE-AWARE GENERATION RULE
+--------------------------------
 
-Q: What mistake do students make when applying ___?
-A: ...
+Use role intelligently:
 
-Q: When should ___ NOT be used?
-A: ...
+• core:
+  usually deserves the strongest anchor and, if budget allows, one deeper card
 
-Q: What condition must hold for ___ to apply?
-A: ...
+• supporting:
+  usually deserves only one compact, high-value card
 
-If these sections exist in the concept, you MUST convert them into flashcards.
+• process_step:
+  card should focus on the purpose of the step, correct sequence, or order mistake
 
-REQUIRED PER CONCEPT
+• pitfall:
+  card should focus on the concrete misunderstanding and correction
 
-You MUST generate 2–3 flashcards per concept.
+• example:
+  only generate a card if the example teaches a transferable exam pattern
 
-Across those cards, you MUST include:
+• statistic:
+  only generate a card if the number itself is testable and meaningful
 
-• EXACTLY 1 Definition OR core identification card (MANDATORY anchor) 
-• At least 1 deeper card (Pitfall OR Decision OR Application)
+• exam_meta:
+  generate NO card unless card_budget explicitly permits it,
+  and even then avoid “this is often tested” style wording
 
-Do NOT force all card types for every concept.
-Only generate what is meaningful and supported by the concept.
-
+--------------------------------
 DEFINITION QUALITY RULE
+--------------------------------
 
 A definition card must:
-• Clearly state what the concept IS (not just describe behavior)
-• Be answerable in ≤2 lines
-• Be testable as a direct exam-style question
 
-These are NOT optional.
+• clearly state what the concept IS
+• not merely describe behavior vaguely
+• be answerable in ≤2 lines
+• be testable in direct exam-style wording
 
-OPTIONAL BUT PREFERRED
+These rules are NOT optional.
 
-• 1 Comparison card if related concepts exist
-• 1 Application card if a scenario is possible
-• 1 Recognition card resembling exam style
+But do NOT force a definition card if a stronger anchor card exists
+and the concept budget is only 1.
 
+--------------------------------
 COMPARISON RULE
+--------------------------------
 
-If multiple related concepts exist (e.g., ERP vs MRP, CPU vs RAM),
-generate comparison questions.
+If related concepts exist, comparison cards are HIGH VALUE.
 
+Generate comparison cards when they help prevent confusion.
+
+Examples:
+• ERP vs MRP
+• CPU vs RAM
+• social media vs SMIS
+• traditional CRM vs social CRM
+• human capital vs social capital
+
+A strong comparison card should clarify:
+• difference in purpose
+• difference in usage
+• difference in structure
+• difference in conditions
+• what students commonly mix up
+
+--------------------------------
 LIST HANDLING RULE
+--------------------------------
 
-If the evidence contains a list, create:
+If evidence contains a list:
 
-• one list recall card
-• additional cards testing individual items.
+• create a list recall card ONLY if the whole list is genuinely testable as a unit
+• do NOT automatically create extra cards for every list item
+• only create an additional item-level card if an item is especially important, confusing, or exam-relevant
 
-GROUNDING
+Do NOT inflate the deck just because a list appears.
+
+--------------------------------
+EXAMPLE RULE
+--------------------------------
+
+If evidence contains an example or scenario:
+
+• create a card ONLY if the example teaches a transferable pattern, application, or distinction
+• do NOT create standalone cards for weak or decorative examples
+• prefer examples that improve interpretation, method choice, or recognition
+
+--------------------------------
+GROUNDING RULE
+--------------------------------
 
 If an "evidence" field exists, ground the flashcard in that text.
 
-Do NOT invent facts not supported by evidence.
+Use:
+• evidence
+• pitfalls
+• when_to_use
+• definition
 
-GOOD examples:
+Do NOT invent facts not supported by the concept payload.
+
+Every flashcard must be grounded in the extracted concept data.
+
+--------------------------------
+DUPLICATE PREVENTION RULE
+--------------------------------
+
+Do NOT generate:
+
+• multiple cards asking the same definition in different wording
+• one definition card plus another disguised definition card
+• separate cards for minor variations of the same concept
+• separate cards for weak examples unless clearly valuable
+• “this is often tested” cards
+• cards that overlap heavily in learning value
+
+If two candidate cards teach nearly the same thing, keep the stronger one.
+
+--------------------------------
+GOOD EXAMPLES
+--------------------------------
+
+Good:
 
 Q: What type of process has fixed sequences and rare exceptions?
-A: Structured process
+A: Structured process.
 
-Q: Which business process type supports strategic decisions?
-A: Dynamic processes
+Q: Which business process type is dynamic and unpredictable?
+A: Social media processes.
 
-BAD examples:
+Q: When should social CRM be emphasized over traditional CRM?
+A: When customer influence and real-time interaction matter more than controlled transactions.
+
+--------------------------------
+BAD EXAMPLES
+--------------------------------
+
+Bad:
 
 Q: What are the three types of processes?
-A: Structured, Dynamic, Hybrid
+A: Structured, Dynamic, Hybrid.
 
-Do NOT generate large list answers.
+Q: What is an important idea about social media?
+A: It is important.
 
-EXAMPLE RULE
+Q: What is this concept called?
+A: [paraphrased duplicate of another card]
 
-If evidence contains an example or scenario,
-create a flashcard testing the example.
+Do NOT generate weak or bloated cards like these.
 
-DO NOT invent information not supported by evidence.
+--------------------------------
+ANSWER STYLE
+--------------------------------
+
+Answers must be:
+• short
+• precise
+• direct
+• usually 1–2 lines
+
+Do not write mini-paragraphs.
+
+--------------------------------
+OUTPUT FORMAT
+--------------------------------
 
 Return JSON ONLY:
 
@@ -1835,10 +2153,13 @@ Return JSON ONLY:
 Generate flashcards from these concepts.
 
 Requirements:
-- Aim for 2 cards per concept minimum when well grounded.
-- Keep cards atomic.
+- Obey card_budget strictly.
 - Return concept_name for every card.
+- Keep cards atomic.
 - Do not compress multiple concepts into one card.
+- Avoid paraphrase duplicates.
+- Prefer the smallest strong deck over maximum quantity.
+- Prefer mistake prevention, conditions, comparisons, and when-to-use over shallow recall when those are grounded.
 
 Concepts:
 {json.dumps(batch)}
@@ -2227,13 +2548,15 @@ Concepts:
         if parsed:
             all_cards.extend(parsed.get("flashcards", []))
 
+    # exact question dedupe first
     unique = {}
     for c in all_cards:
         q = c.get("question", "").strip().lower()
         if q:
             unique[q] = c
 
-    return list(unique.values())
+    deduped = dedupe_flashcards(list(unique.values()))
+    return deduped
     
 def semantic_dedupe(concepts, threshold=0.96):
     unique = []
@@ -2266,5 +2589,49 @@ def semantic_dedupe(concepts, threshold=0.96):
 
         if keep:
             unique.append(c)
+
+    return unique
+    
+    
+def normalize_card_text(text: str) -> str:
+    text = (text or "").strip().lower()
+    text = re.sub(r"[^a-z0-9\s]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def flashcards_too_similar(a: dict, b: dict) -> bool:
+    qa = normalize_card_text(a.get("question", ""))
+    qb = normalize_card_text(b.get("question", ""))
+    aa = normalize_card_text(a.get("answer", ""))
+    ab = normalize_card_text(b.get("answer", ""))
+
+    if qa == qb:
+        return True
+
+    # same concept + same answer + very overlapping question
+    if a.get("concept_name") == b.get("concept_name") and aa == ab:
+        a_words = set(qa.split())
+        b_words = set(qb.split())
+        if not a_words or not b_words:
+            return False
+        overlap = len(a_words & b_words) / max(1, len(a_words | b_words))
+        if overlap >= 0.72:
+            return True
+
+    return False
+
+
+def dedupe_flashcards(cards: list[dict]) -> list[dict]:
+    unique = []
+
+    for card in cards:
+        keep = True
+        for seen in unique:
+            if flashcards_too_similar(card, seen):
+                keep = False
+                break
+        if keep:
+            unique.append(card)
 
     return unique

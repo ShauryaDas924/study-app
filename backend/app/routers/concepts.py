@@ -19,6 +19,7 @@ from app.services.llm import (
     extract_concepts_from_note,
     extract_math_concepts_from_note
 )
+from app.services.llm import classify_concept_role, assign_card_budget
 from app.services.llm import (
     generate_flashcards_from_concepts,
     generate_math_flashcards_from_concepts
@@ -210,7 +211,7 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
     linked_concepts = concept_rows.scalars().all()
 
     for concept in linked_concepts:
-        concept_payloads.append({
+        payload = {
             "name": concept.name,
             "description": concept.description,
             "definition": concept.definition,
@@ -218,7 +219,10 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
             "pitfalls": concept.pitfalls,
             "evidence": concept.evidence,
             "confidence": float(concept.confidence or 0.5),
-        })
+        }
+        payload["role"] = classify_concept_role(payload)
+        payload["card_budget"] = assign_card_budget(payload)
+        concept_payloads.append(payload)
     
     if concept_payloads:
 

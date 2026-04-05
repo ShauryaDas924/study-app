@@ -14,6 +14,7 @@ from app.services.llm import (
     generate_flashcards_from_concepts,
     client
 )
+from app.services.llm import classify_concept_role, assign_card_budget
 from fastapi import Form, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
@@ -176,7 +177,7 @@ async def upload_note(
     concept_lookup = {}
 
     for concept in saved_concepts:
-        concept_payloads.append({
+        payload = {
             "name": concept.name,
             "description": concept.description,
             "definition": concept.definition,
@@ -184,7 +185,10 @@ async def upload_note(
             "pitfalls": getattr(concept, "pitfalls", None),
             "evidence": concept.evidence or concept.description,
             "confidence": float(concept.confidence or 0.5),
-        })
+        }
+        payload["role"] = classify_concept_role(payload)
+        payload["card_budget"] = assign_card_budget(payload)
+        concept_payloads.append(payload)
         concept_lookup[concept.name] = concept
 
     generated_flashcards = await generate_flashcards_from_concepts(concept_payloads)
