@@ -38,17 +38,64 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
 
     def flatten_note_json(content):
         if isinstance(content, dict):
-            return " ".join(flatten_note_json(v) for v in content.values())
+            parts = [flatten_note_json(v) for v in content.values()]
+            return "\n".join(p for p in parts if p)
         if isinstance(content, list):
-            return " ".join(flatten_note_json(v) for v in content)
-        return str(content)
+            parts = [flatten_note_json(v) for v in content]
+            return "\n".join(p for p in parts if p)
+        return str(content).strip()
 
     note_text = flatten_note_json(note.content_json)
     if mode == "math":
         concepts = await extract_math_concepts_from_note(note_text)
     else:
         concepts = await extract_concepts_from_note(note_text)
+    
+    enriched_concepts = []
 
+    for c in concepts:
+        pitfall_resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "List one common exam mistake students make with this concept. Ground it in the provided evidence. One short sentence."
+                },
+                {
+                    "role": "user",
+                    "content": f"Concept: {c['name']}\nDescription: {c.get('description','')}\nEvidence: {c.get('evidence','')}"
+                }
+            ],
+            temperature=0.2
+        )
+        pitfall_text = pitfall_resp.choices[0].message.content.strip()
+
+        when_resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Explain when this concept should be used on an exam or in a problem. One short grounded sentence."
+                },
+                {
+                    "role": "user",
+                    "content": f"Concept: {c['name']}\nDescription: {c.get('description','')}\nEvidence: {c.get('evidence','')}"
+                }
+            ],
+            temperature=0.2
+        )
+        when_text = when_resp.choices[0].message.content.strip()
+
+        enriched_concepts.append({
+            "name": c["name"],
+            "description": c.get("description"),
+            "definition": c.get("description"),
+            "when_to_use": when_text,
+            "pitfalls": pitfall_text,
+            "evidence": c.get("evidence"),
+            "confidence": float(c.get("confidence", 0.5)),
+            "exam_priority_locked": c.get("exam_priority_locked", False),
+        })
     created = []
     existing_names_res = await db.execute(
         select(Concept.name).where(
@@ -60,70 +107,70 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
     existing_names = {r[0].lower() for r in existing_names_res.fetchall()}
 
 
-    for c in concepts:
+    for c in enriched_concepts:
 
         if c["name"].lower() in existing_names:
-            existing_concept = await db.execute(
+            existing_concept_res = await db.execute(
                 select(Concept).where(
                     Concept.name.ilike(c["name"]),
                     Concept.user_id == note.user_id,
                     Concept.class_id == note.class_id
                 )
             )
-            concept = existing_concept.scalars().first()
-    
-            link = NoteConcept(
-                note_id=note.id,
-                concept_id=concept.id,
-                weight=float(c.get("confidence", 1.0))
+            concept = existing_concept_res.scalars().first()
+
+            if concept:
+                new_desc = c.get("description")
+                new_evidence = c.get("evidence")
+                new_conf = float(c.get("confidence", concept.confidence or 0.5))
+
+                # Refresh description/definition if new one is stronger
+                if new_desc and (
+                    not concept.description or
+                    len(new_desc) > len(concept.description or "")
+                ):
+                    concept.description = new_desc
+                    concept.definition = new_desc
+
+                # Always refresh evidence if new evidence exists
+                if new_evidence:
+                    concept.evidence = new_evidence
+
+                # Keep strongest confidence seen so far
+                concept.confidence = max(float(concept.confidence or 0.5), new_conf)
+
+                # Refresh pitfall with grounded context
+                concept.pitfalls = c.get("pitfalls")
+                concept.when_to_use = c.get("when_to_use")
+
+            # Avoid duplicate note-concept links
+            existing_link = await db.execute(
+                select(NoteConcept).where(
+                    NoteConcept.note_id == note.id,
+                    NoteConcept.concept_id == concept.id
+                )
             )
-            db.add(link)
+            if not existing_link.scalar_one_or_none():
+                db.add(
+                    NoteConcept(
+                        note_id=note.id,
+                        concept_id=concept.id,
+                        weight=float(c.get("confidence", 1.0))
+                    )
+                )
+
             continue
 
-        # Generate simple pitfalls automatically
-        pitfall_resp = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {
-                    "role":"system",
-                    "content":"List one common mistake students make with this concept."
-                },
-                {
-                    "role":"user",
-                    "content":f"{c['name']} : {c.get('description','')}"
-                }
-            ],
-            temperature=0.3
-        )
-
-        pitfall_text = pitfall_resp.choices[0].message.content.strip()
-            
-        # Generate when_to_use explanation
-        when_resp = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {
-                    "role":"system",
-                    "content":"Explain when this concept should be used when solving problems. One short sentence."
-                },
-                {
-                    "role":"user",
-                    "content":f"{c['name']} : {c.get('description','')}"
-                }
-            ],
-            temperature=0.3
-        )
-
-        when_text = when_resp.choices[0].message.content.strip()
+        
         
         concept = Concept(
             user_id=note.user_id,
             class_id=note.class_id,
             name=c["name"],
             description=c.get("description"),
-            definition=c.get("description"),
-            when_to_use=when_text,
-            pitfalls=pitfall_text,
+            definition=c.get("definition"),
+            when_to_use=c.get("when_to_use"),
+            pitfalls=c.get("pitfalls"),
             confidence=float(c.get("confidence", 0.5)),
             evidence=c.get("evidence")
         )
@@ -148,18 +195,42 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
         db.add(link)
         created.append({"id": str(concept.id), "name": concept.name})
     # -------- SMART FLASHCARD GENERATION --------
+    concept_payloads = []
 
-    if concepts:
+    concept_rows = await db.execute(
+        select(Concept)
+        .join(NoteConcept, NoteConcept.concept_id == Concept.id)
+        .where(
+            Concept.user_id == note.user_id,
+            Concept.class_id == note.class_id,
+            NoteConcept.note_id == note.id
+        )
+    )
+
+    linked_concepts = concept_rows.scalars().all()
+
+    for concept in linked_concepts:
+        concept_payloads.append({
+            "name": concept.name,
+            "description": concept.description,
+            "definition": concept.definition,
+            "when_to_use": concept.when_to_use,
+            "pitfalls": concept.pitfalls,
+            "evidence": concept.evidence,
+            "confidence": float(concept.confidence or 0.5),
+        })
+    
+    if concept_payloads:
 
         if mode == "math":
-            flashcards = await generate_math_flashcards_from_concepts(concepts)
+            flashcards = await generate_math_flashcards_from_concepts(concept_payloads)
         else:
-            flashcards = await generate_flashcards_from_concepts(concepts)
+            flashcards = await generate_flashcards_from_concepts(concept_payloads)
 
         # get created concept objects
         concept_lookup = {}
 
-        for c in concepts:
+        for c in enriched_concepts:
             res = await db.execute(
                 select(Concept.id).where(
                     Concept.name.ilike(c["name"]),
@@ -170,17 +241,30 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
             cid = res.scalar()
             if cid:
                 concept_lookup[c["name"]] = cid
-
+                
+        existing_flashcards_res = await db.execute(
+            select(Flashcard.question).where(
+                Flashcard.user_id == note.user_id,
+                Flashcard.note_id == note.id
+            )
+        )
+        existing_flashcard_questions = {
+            row[0].strip().lower() for row in existing_flashcards_res.fetchall()
+        }
         for card in flashcards:
+            q_key = card.get("question", "").strip().lower()
+            if not q_key or q_key in existing_flashcard_questions:
+                continue
 
-            matched_concept_id = None
+            matched_concept_id = concept_lookup.get(card.get("concept_name"))
 
-            for name, cid in concept_lookup.items():
-                if name.replace("_", " ") in (
-                    card["question"] + " " + card["answer"]
-                ).lower():
-                    matched_concept_id = cid
-                    break
+            if not matched_concept_id:
+                for name, cid in concept_lookup.items():
+                    if name.replace("_", " ") in (
+                        (card.get("question", "") + " " + card.get("answer", "")).lower()
+                    ):
+                        matched_concept_id = cid
+                        break
 
             fc = Flashcard(
                 user_id=note.user_id,
@@ -194,7 +278,12 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
             )
 
             db.add(fc)
-    await db.commit()
+            existing_flashcard_questions.add(q_key)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
     return {"message": "Concepts extracted", "concepts": created}
 
 @router.get("/concepts/by-class/{class_id}")

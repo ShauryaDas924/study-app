@@ -302,18 +302,25 @@ Return JSON ONLY:
 
 
 def clean_note_text(text: str) -> str:
+    # Remove control chars but keep newlines
+    text = re.sub(r"[\u0000-\u0008\u000B-\u001F\u007F-\u009F]", " ", text)
 
-    # Remove control characters but KEEP math symbols
-    text = re.sub(r"[\u0000-\u001F\u007F-\u009F]", " ", text)
+    # Preserve bullets by converting them into line-start markers
+    text = text.replace("❖", "\n❖ ")
+    text = text.replace("•", "\n• ")
+    text = text.replace("►", "\n• ")
+    text = text.replace("●", "\n• ")
+    text = text.replace("◆", "\n• ")
 
-    # Remove repeated decorative symbols
-    text = re.sub(r"[•■►●◆]+", " ", text)
+    # Remove only decorative solid blocks
+    text = re.sub(r"[■]+", " ", text)
 
-    # Remove slide numbers like "Slide 12"
+    # Remove slide labels like "Slide 12"
     text = re.sub(r"\bslide\s*\d+\b", " ", text, flags=re.I)
 
-    # Collapse whitespace
+    # Collapse spaces but preserve lines
     text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
 
     return text.strip()
     
@@ -453,6 +460,75 @@ def booster_add_named_concepts(note_text: str, concepts: list):
 FORMULA_PATTERN = re.compile(
     r"(=|Σ|∑|μ|σ|β|θ|λ|δ|∫|ln|log|\bP\(|\bE\[|\bVar|\bCov)"
 )
+
+OBJECTIVE_LINE_PATTERN = re.compile(
+    r"^\s*[•\-❖]\s*(what|how|why|when|which)\b.*",
+    re.I
+)
+
+COMPARISON_PATTERN = re.compile(
+    r"\b(.+?)\s+vs\.?\s+(.+?)\b",
+    re.I
+)
+
+def booster_add_comparisons(note_text: str, concepts: list):
+    existing = {c["name"] for c in concepts}
+
+    for match in COMPARISON_PATTERN.findall(note_text):
+        left = match[0].strip()
+        right = match[1].strip()
+
+        if len(left) > 40 or len(right) > 40:
+            continue
+
+        snake = (
+            f"{left}_vs_{right}"
+            .lower()
+            .replace(" ", "_")
+            .replace(".", "")
+            .replace("/", "_")
+        )[:80]
+
+        if snake not in existing:
+            concepts.append({
+                "name": snake,
+                "description": f"Comparison between {left} and {right}",
+                "evidence": f"{left} vs {right}",
+                "confidence": 0.78,
+                "exam_priority_locked": True
+            })
+
+    return concepts
+
+def booster_add_objective_concepts(note_text: str, concepts: list):
+    lines = note_text.split("\n")
+    existing = {c["name"] for c in concepts}
+
+    for line in lines:
+        clean = line.strip()
+        if not clean:
+            continue
+
+        if OBJECTIVE_LINE_PATTERN.search(clean):
+            base = re.sub(r"^[•\-❖]\s*", "", clean).strip()
+            snake = (
+                base.lower()
+                .replace("?", "")
+                .replace(",", "")
+                .replace(" ", "_")
+            )[:80]
+
+            if snake not in existing:
+                concepts.append({
+                    "name": snake,
+                    "description": base,
+                    "evidence": clean,
+                    "confidence": 0.82,
+                    "exam_priority_locked": True
+                })
+
+    return concepts
+
 
 # ========= ACRONYM BOOSTER =========
 
@@ -657,6 +733,26 @@ def booster_math_derivations(note_text: str, concepts: list):
 
     return concepts
 
+def batch_list(items, size=18):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def chunk_text_by_lines(text: str, max_lines: int = 70):
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    chunks = []
+    current = []
+
+    for line in lines:
+        current.append(line)
+        if len(current) >= max_lines:
+            chunks.append("\n".join(current))
+            current = []
+
+    if current:
+        chunks.append("\n".join(current))
+
+    return chunks
 
 CONCEPT_PROMPT = """
 You are an expert educator building an EXAM-FOCUSED concept list.
@@ -1205,87 +1301,87 @@ async def extract_concepts_from_note(note_text: str):
 
     if not cleaned.strip():
         return []
-    resp = kimi_client.chat.completions.create(
-        model="kimi-k2.5",
-        messages=[
-            {"role": "system", "content": CONCEPT_PROMPT},
 
-            {"role": "user", "content": cleaned},
-        ],
-        
-    )
-    raw = resp.choices[0].message.content
-    print("\n📄 LLM RAW RESPONSE:\n", raw)
-    parsed = safe_json_loads(raw)
-    print("\n✅ PARSED JSON:\n", parsed)
+    chunks = chunk_text_by_lines(cleaned, max_lines=70)
+    all_concepts = []
 
-    if not parsed or "concepts" not in parsed:
-        return []
+    for chunk in chunks:
+        resp = kimi_client.chat.completions.create(
+            model="kimi-k2.5",
+            messages=[
+                {"role": "system", "content": CONCEPT_PROMPT},
+                {"role": "user", "content": chunk},
+            ],
+        )
 
-    concepts = parsed["concepts"]
-    # -------- GROUNDING CHECK --------
+        raw = resp.choices[0].message.content
+        print("\n📄 LLM RAW RESPONSE:\n", raw)
+        parsed = safe_json_loads(raw)
+        print("\n✅ PARSED JSON:\n", parsed)
 
-    grounded = []
+        if not parsed or "concepts" not in parsed:
+            continue
 
-    for c in concepts:
+        chunk_concepts = parsed["concepts"]
 
-        evidence = c.get("evidence","").lower()
+        grounded = []
+        for c in chunk_concepts:
+            evidence = c.get("evidence", "").lower().strip()
+            if evidence and evidence[:80] in chunk.lower():
+                grounded.append(c)
 
-        if evidence and evidence.lower().strip()[:50] in cleaned.lower():
-            grounded.append(c)
+        all_concepts.extend(grounded)
 
-    concepts = grounded
-    
-    concepts = booster_add_named_concepts(
-        cleaned,
-        concepts
-    )
+    concepts = all_concepts
 
-    concepts = booster_add_formula_concepts(
-        cleaned,
-        concepts
-    )
+    concepts = booster_add_named_concepts(cleaned, concepts)
+    concepts = booster_add_formula_concepts(cleaned, concepts)
     concepts = booster_add_acronyms(cleaned, concepts)
-
     concepts = booster_review_sections(cleaned, concepts)
-
+    concepts = booster_add_objective_concepts(cleaned, concepts)
+    concepts = booster_add_comparisons(cleaned, concepts)
     normalized = {}
-
     for c in concepts:
         key = normalize_concept_name(c["name"])
-        normalized[key] = c
+        best = normalized.get(key)
+
+        if not best or c.get("confidence", 0) > best.get("confidence", 0):
+            normalized[key] = c
 
     concepts = list(normalized.values())
 
     filtered = []
-
     for c in concepts:
         conf = c.get("confidence", 0)
 
-        # keep high confidence
+        if c.get("exam_priority_locked"):
+            filtered.append(c)
+            continue
+
         if conf >= 0.40:
             filtered.append(c)
             continue
 
-        # keep short key terms
         if len(c["name"].split("_")) <= 2 and conf >= 0.30:
             filtered.append(c)
 
-    # ⭐ ADD THIS PART
     ranked = await rank_exam_importance(filtered)
+
     for c in ranked:
         c["final_score"] = (
-            0.6 * c.get("confidence", 0.5)
-            + 0.4 * c.get("exam_score", 0.5)
+            0.55 * c.get("confidence", 0.5)
+            + 0.45 * c.get("exam_score", 0.5)
         )
 
     ranked.sort(key=lambda x: x["final_score"], reverse=True)
-    # keep more concepts
-    ranked = [c for c in ranked if c.get("exam_score",0) >= 0.45]
+    ranked = [
+        c for c in ranked
+        if c.get("exam_score", 0) >= 0.28 or c.get("confidence", 0) >= 0.72
+    ]
 
-    ranked = semantic_dedupe(ranked)
+    ranked = semantic_dedupe(ranked, threshold=0.96)
 
-    return ranked[:60]
+    return ranked[:100]
     
 
 
@@ -1537,11 +1633,13 @@ Class concepts:
     
     
 async def generate_flashcards_from_concepts(concepts: list[dict]):
+    all_cards = []
 
-    resp = client.chat.completions.create(
-        model="gpt-5.4",
-        messages=[
-            {
+    for batch in batch_list(concepts, size=18):
+        resp = client.chat.completions.create(
+            model="gpt-5.4",
+            messages=[
+                {
                 "role":"system",
                 "content":"""
 You are an expert learning scientist and educator.
@@ -1722,6 +1820,7 @@ Return JSON ONLY:
 {
   "flashcards":[
     {
+      "concept_name":"snake_case_name",
       "question":"...",
       "answer":"...",
       "confidence":0.8
@@ -1731,34 +1830,46 @@ Return JSON ONLY:
 """
             },
             {
-                "role":"user",
-                "content": json.dumps(concepts)
-            }
-        ],
-        temperature=0.2,
-        max_completion_tokens=2000
-    )
+                "role": "user",
+                    "content": f"""
+Generate flashcards from these concepts.
 
-    parsed = safe_json_loads(resp.choices[0].message.content)
+Requirements:
+- Aim for 2 cards per concept minimum when well grounded.
+- Keep cards atomic.
+- Return concept_name for every card.
+- Do not compress multiple concepts into one card.
 
-    if not parsed:
-        return []
+Concepts:
+{json.dumps(batch)}
+"""
+                }
+            ],
+            temperature=0.2,
+            max_completion_tokens=5000
+        )
 
-    cards = parsed.get("flashcards", [])
+        parsed = safe_json_loads(resp.choices[0].message.content)
+
+        if parsed:
+            all_cards.extend(parsed.get("flashcards", []))
 
     unique = {}
-    for c in cards:
-        key = c["question"].strip().lower()
-        unique[key] = c
+    for c in all_cards:
+        q = c.get("question", "").strip().lower()
+        if q:
+            unique[q] = c
 
     return list(unique.values())
 
 async def generate_math_flashcards_from_concepts(concepts: list[dict]):
+    all_cards = []
 
-    resp = client.chat.completions.create(
-        model="gpt-5.4",
-        messages=[
-            {
+    for batch in batch_list(concepts, size=16):
+        resp = client.chat.completions.create(
+            model="gpt-5.4",
+            messages=[
+                {
                 "role": "system",
                 "content": """
 You are an expert mathematician, statistician, actuarial scientist, and learning scientist.
@@ -2081,56 +2192,67 @@ OUTPUT FORMAT
 Return JSON ONLY:
 
 {
- "flashcards":[
-  {
-   "question":"...",
-   "answer":"...",
-   "confidence":0.9
-  }
- ]
+  "flashcards":[
+    {
+      "concept_name":"snake_case_name",
+      "question":"...",
+      "answer":"...",
+      "confidence":0.8
+    }
+  ]
 }
 """
             },
             {
                 "role": "user",
-                "content": json.dumps(concepts)
-            }
-        ],
-        temperature=0.2,
-        max_completion_tokens=2000
-    )
+                    "content": f"""
+Generate mathematical flashcards from these concepts.
 
-    parsed = safe_json_loads(resp.choices[0].message.content)
+Requirements:
+- Return concept_name for every card.
+- Keep each card atomic.
+- Prefer formula selection and pitfall prevention over shallow recall.
 
-    if not parsed:
-        return []
+Concepts:
+{json.dumps(batch)}
+"""
+                }
+            ],
+            temperature=0.2,
+            max_completion_tokens=5000
+        )
 
-    cards = parsed.get("flashcards", [])
+        parsed = safe_json_loads(resp.choices[0].message.content)
+
+        if parsed:
+            all_cards.extend(parsed.get("flashcards", []))
 
     unique = {}
-
-    for c in cards:
-        key = c["question"].strip().lower()
-        unique[key] = c
+    for c in all_cards:
+        q = c.get("question", "").strip().lower()
+        if q:
+            unique[q] = c
 
     return list(unique.values())
     
-def semantic_dedupe(concepts, threshold=0.92):
-
+def semantic_dedupe(concepts, threshold=0.96):
     unique = []
 
     for c in concepts:
-
-        # create embedding if missing
         if "embedding" not in c:
             text = f"{c.get('name','')} {c.get('description','')}"
             c["embedding"] = embed_text(text)
 
         cvec = np.array(c["embedding"])
-
         keep = True
 
         for u in unique:
+            c_evidence = c.get("evidence", "").strip().lower()
+            u_evidence = u.get("evidence", "").strip().lower()
+
+            # If evidence is different, allow both to coexist
+            if c_evidence and u_evidence and c_evidence != u_evidence:
+                continue
 
             if "embedding" not in u:
                 text = f"{u.get('name','')} {u.get('description','')}"

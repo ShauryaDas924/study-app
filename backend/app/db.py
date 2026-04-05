@@ -23,7 +23,7 @@ engine = create_async_engine(
 
     connect_args={
         "server_settings": {
-            "statement_timeout": "60000"  # 60 seconds
+            "statement_timeout": "180000"  # 60 seconds
         }
     }
 )
