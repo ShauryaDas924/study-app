@@ -376,30 +376,53 @@ with open(SCHEMA_PATH) as f:
     QUESTION_SCHEMA = json.load(f)
     
 def safe_json_loads(s: str):
-
     if not s:
         return None
 
-    # Remove markdown code blocks like ```json ... ```
-    s = s.replace("```json", "")
-    s = s.replace("```", "")
+    # Remove markdown code fences
+    s = s.replace("```json", "").replace("```", "").strip()
 
-    # Remove whitespace
-    s = s.strip()
+    # Normalize smart quotes / apostrophes
+    s = (
+        s.replace("\u201c", '"')
+         .replace("\u201d", '"')
+         .replace("\u2018", "'")
+         .replace("\u2019", "'")
+    )
 
-    # Extract the first JSON object if extra text exists
+    # Extract the largest JSON object span
     start = s.find("{")
     end = s.rfind("}")
-
     if start != -1 and end != -1:
-        s = s[start:end+1]
+        s = s[start:end + 1]
 
+    # First attempt: direct parse
     try:
         return json.loads(s)
+    except Exception:
+        pass
 
+    # Repair common LLM JSON issue:
+    # unescaped quoted word/phrase inside a JSON string, e.g.
+    # "evidence": "blessing" (employees ...)"
+    s_fixed = s
+
+    # Replace inner quotes inside evidence/description values with single quotes
+    s_fixed = re.sub(
+        r'("(?:evidence|description)"\s*:\s*")([^"\n]*?)"(\s*\([^"\n]*?\))(")',
+        lambda m: f'{m.group(1)}{m.group(2)}\'{m.group(3)}{m.group(4)}',
+        s_fixed
+    )
+
+    # Remove trailing commas before } or ]
+    s_fixed = re.sub(r",(\s*[}\]])", r"\1", s_fixed)
+
+    try:
+        return json.loads(s_fixed)
     except Exception as e:
         print("\n⚠️ LLM JSON PARSE FAILED")
         print("RAW OUTPUT:\n", s)
+        print("REPAIRED OUTPUT:\n", s_fixed)
         print("ERROR:", e, "\n")
         return None
         
@@ -955,6 +978,13 @@ QUALITY RULES
 ------------------------------------------------
 OUTPUT FORMAT
 ------------------------------------------------
+IMPORTANT JSON RULES:
+- Output MUST be valid JSON.
+- Escape all internal double quotes inside strings.
+- Do NOT place unescaped quotation marks inside the evidence field.
+- If the source text contains quotation marks, replace them with single quotes in the JSON value.
+- Do NOT include commentary before or after the JSON.
+- Do NOT include trailing commas.
 
 Return JSON ONLY:
 
@@ -1502,15 +1532,13 @@ async def extract_concepts_from_note(note_text: str):
         )
 
     ranked.sort(key=lambda x: x["final_score"], reverse=True)
-    ranked = [
-        c for c in ranked
-        if c.get("exam_score", 0) >= 0.28 or c.get("confidence", 0) >= 0.72
-    ]
 
-    ranked = semantic_dedupe(ranked, threshold=0.93)
+    # Keep broad recall; do NOT prune concepts here just to control flashcard count.
+    # Flashcard efficiency is now handled downstream by role + card_budget.
+    ranked = semantic_dedupe(ranked, threshold=0.96)
     ranked = annotate_concepts_for_flashcards(ranked)
 
-    return ranked[:100]
+    return ranked[:140]
     
 
 
@@ -1599,10 +1627,10 @@ async def extract_math_concepts_from_note(note_text: str):
             + 0.45 * c.get("exam_score", 0.5)
         )
 
-    ranked = semantic_dedupe(ranked, threshold=0.94)
+    ranked = semantic_dedupe(ranked, threshold=0.97)
     ranked = annotate_concepts_for_flashcards(ranked)
 
-    return ranked[:80]
+    return ranked[:120]
 
 async def generate_one_question(concepts: list, difficulty: int, subject_tag: str, context_blob="", concept_details: list | None = None):
     payload = {
@@ -2193,10 +2221,15 @@ async def generate_math_flashcards_from_concepts(concepts: list[dict]):
                 {
                 "role": "system",
                 "content": """
-You are an expert mathematician, statistician, actuarial scientist, and learning scientist.
+You are an expert mathematician, statistician, actuarial scientist, exam designer, and learning scientist.
 
-Your task is to generate HIGH-QUALITY MATHEMATICAL FLASHCARDS that help students master
-mathematical reasoning, proof logic, formula selection, and problem-solving strategies.
+Your task is to generate HIGH-QUALITY MATHEMATICAL FLASHCARDS that help students master:
+• mathematical reasoning
+• proof logic
+• formula selection
+• conditions of use
+• error prevention
+• problem-solving strategy
 
 These flashcards must support university-level mathematics including:
 
@@ -2213,298 +2246,380 @@ These flashcards must support university-level mathematics including:
 • actuarial mathematics
 
 --------------------------------
-CORE LEARNING PRINCIPLE
+PRIMARY GOAL
 --------------------------------
 
-Follow the **Minimum Information Principle** used by Anki.
+Build the SMALLEST high-quality deck that still preserves BROAD and DEEP concept coverage.
+
+Do NOT maximize card count.
+Maximize:
+• exam performance
+• recall efficiency
+• conceptual precision
+• mistake prevention
+
+Each concept includes:
+• role
+• card_budget
+• description
+• definition
+• when_to_use
+• pitfalls
+• evidence
+• confidence
+
+You MUST obey card_budget strictly.
+
+--------------------------------
+MINIMUM INFORMATION PRINCIPLE
+--------------------------------
+
+Follow the Minimum Information Principle used by Anki.
 
 Each flashcard must test ONE meaningful mathematical idea.
 
-Avoid splitting concepts into trivial fragments.
+Avoid:
+• trivial fragmentation
+• paraphrase duplicates
+• splitting one concept into many shallow recall cards
 
-Prefer one strong conceptual card over several weak cards.
-
---------------------------------
-CARD TYPES
---------------------------------
-
-Across the deck maintain approximately:
-
-20% Formula Recall
-30% Formula Selection (PRIMARY)
-20% Concept Understanding
-10% Pattern Recognition
-10% Pitfalls (MANDATORY)
-10% Method Identification
+Prefer:
+• one strong card over several weak cards
+• one card that changes exam performance over one that merely repeats wording
 
 --------------------------------
-EXAM FAILURE PREVENTION (CRITICAL)
+CARD BUDGET RULES (MANDATORY)
 --------------------------------
 
-You MUST generate flashcards that explicitly prevent common exam failures:
+For EACH concept:
 
-1) WRONG FORMULA SELECTION
-2) MISSING CONDITIONS
-3) DOMAIN / SUPPORT ERRORS
-4) SIGN / VARIABLE MISUSE
-5) INCOMPLETE SOLUTIONS
+• If card_budget = 0:
+  Generate NO standalone card.
 
-At least 40% of concepts MUST include a failure-prevention (pitfall) card.
+• If card_budget = 1:
+  Generate EXACTLY 1 strong card.
 
---------------------------------
-PROOF AND LOGIC CARDS
---------------------------------
+• If card_budget = 2:
+  Generate EXACTLY 2 cards:
+  1) EXACTLY 1 anchor card
+  2) EXACTLY 1 deeper card
 
-If the concept involves a proof, theorem, or logical structure,
-generate cards that test:
+Never exceed card_budget.
 
-• key proof steps
-• assumptions required
-• why the result holds
-• common logical mistakes
-
-Example:
-
-Q: What key assumption allows the Central Limit Theorem to apply?
-A: Independent and identically distributed variables with finite variance.
+If a concept is weak, example-only, statistic-only, redundant, or exam-meta,
+do not force extra cards.
 
 --------------------------------
-DISCRETE MATH RULE
+ANCHOR VS DEEPER CARD RULE
 --------------------------------
 
-If concepts involve:
+ANCHOR CARD:
+A core recognition card that stabilizes memory.
 
-• combinatorics
-• recurrence relations
-• graph structures
-• algorithmic complexity
-• logical inference
+Valid anchor types:
+• formula recall
+• core identification
+• theorem/result identification
+• process/method identification
+• pattern recognition
 
-Create flashcards that test:
+DEEPER CARD:
+A card that improves exam decision-making.
 
-• reasoning steps
-• structural properties
-• interpretation of results
+Valid deeper types:
+• formula selection
+• when-to-use
+• when-NOT-to-use
+• pitfall / failure prevention
+• conditions / assumptions
+• proof logic
+• comparison / confusion trap
+• multi-step reasoning
+• method choice
 
---------------------------------
-FLASHCARD TYPES EXPLAINED
---------------------------------
-
-1️⃣ Formula Recall
-
-Test recognition of important formulas.
-
-Example:
-Q: What is the variance of a Poisson distribution with parameter λ?
-A: Var(X) = λ
-
----
-
-2️⃣ Formula Selection
-
-Test when a formula or method should be used.
-
-Example:
-Q: When should integration by parts be used?
-A: When integrating a product of functions where one simplifies when differentiated.
-
----
-
-3️⃣ Pattern Recognition
-
-Test identifying distributions, structures, or identities.
-
-Example:
-Q: What distribution has density proportional to q^(a−1)(1−q)^(b−1)?
-A: Beta distribution.
-
----
-
-4️⃣ Concept Understanding
-
-Test interpretation of mathematical results.
-
-Example:
-Q: What does the parameter λ represent in a Poisson distribution?
-A: The expected number of events per interval.
-
----
-
-5️⃣ Method Identification
-
-Test which mathematical technique solves a problem.
-
-Example:
-Q: What technique is commonly used to compute the distribution of a sum of independent variables?
-A: Convolution.
-
----
-
-6️⃣ Common Pitfall
-
-Test common mistakes students make.
-
-Example:
-Q: What mistake do students often make when applying the Central Limit Theorem?
-A: Forgetting that the theorem applies to sample means or sums, not individual observations.
-
---------------------------------
-CARD GENERATION RULES
---------------------------------
-
-Generate between **2 and 4 flashcards per concept**.
-
-Avoid repeating the same formula or concept using slightly different wording.
-
-Prefer deeper conceptual questions rather than trivial recall.
-
-Answers must be **short (1–2 lines)**.
-
---------------------------------
-PER CONCEPT STRUCTURE (MANDATORY)
---------------------------------
-
-For EACH concept, you MUST generate:
-
-• EXACTLY 1 core anchor card:
-  - either formula recall OR core identification
-
-AND
-
-• At least 1 deeper card:
-  - formula selection OR pitfall OR multi-step reasoning
-
-Do NOT generate only recall-based cards.
-
-Each concept MUST include depth.
+If card_budget = 2, the second card should almost always be the deeper one.
 
 --------------------------------
 PRIORITY ORDER
 --------------------------------
 
-If limited information is available, prioritize:
+If information is limited, prioritize in this exact order:
 
-1) Formula selection (HIGHEST)
+1) Formula selection
 2) Pitfalls / failure prevention
 3) Conditions / assumptions
-4) Multi-step reasoning
-5) Formula recall (LOWEST)
+4) Method selection
+5) Proof logic / logical structure
+6) Pattern recognition
+7) Variable meaning
+8) Formula recall
 
 The goal is EXAM PERFORMANCE, not memorization.
 
 --------------------------------
-VARIABLE INTERPRETATION RULE
+MATHEMATICAL CARD TYPES
 --------------------------------
 
-If a formula appears, try to generate at least one card explaining:
+Across the FULL deck, aim for approximate balance:
 
-• what the formula represents
-• what each key variable means
-• when the formula should be used
+• 15–20% Formula Recall
+• 25–30% Formula Selection / Method Selection
+• 15–20% Concept Understanding
+• 10–15% Pattern Recognition
+• 15–20% Pitfalls / Failure Prevention
+• 5–10% Proof / Logic
+• 5–10% Multi-step reasoning
+
+These are deck-level tendencies, not per-concept requirements.
+
+Do NOT force all card types for every concept.
+
+--------------------------------
+EXAM FAILURE PREVENTION (CRITICAL)
+--------------------------------
+
+You MUST actively prevent common exam failures such as:
+
+1) WRONG FORMULA SELECTION
+2) MISSING CONDITIONS
+3) DOMAIN / SUPPORT ERRORS
+4) SIGN / VARIABLE MISUSE
+5) MISREADING WHAT A PARAMETER MEANS
+6) CONFUSING SIMILAR METHODS
+7) INCOMPLETE SOLUTIONS
+8) USING A RESULT OUTSIDE ITS ASSUMPTIONS
+
+Pitfall cards are high value only when they prevent a REAL wrong answer.
+
+Strong pitfall cards usually involve:
+• confusion with a similar concept
+• using a method in the wrong setting
+• forgetting an assumption
+• misinterpreting a formula/result
+• missing the first step in a multi-step problem
+
+Weak pitfall cards to avoid:
+• “be careful”
+• “students forget this”
+• vague warnings with no concrete failure mode
 
 --------------------------------
 FORMULA HANDLING RULE
 --------------------------------
 
-If a formula appears in the concept:
+If a formula appears in the concept, prioritize cards that test:
 
-Create flashcards testing:
+• what the formula represents
+• when to use it
+• when NOT to use it
+• what conditions must hold
+• what the key variables mean
+• what method it may be confused with
 
-• formula recognition
-• variable meaning
-• conditions of validity
-• typical application scenarios
+Do NOT generate multiple shallow cards that all restate the same formula.
+
+Prefer:
+• 1 anchor formula card
+• 1 deeper formula-decision or pitfall card
 
 --------------------------------
-FORMULA DECISION RULE (CRITICAL)
+FORMULA DECISION RULE
 --------------------------------
 
-For EACH important formula, you MUST generate at least one card that tests:
+For important formulas, deeper cards should usually test one of:
 
 • WHEN to use the formula
-• WHEN NOT to use it
-• What alternative method might be confused with it
+• WHEN NOT to use the formula
+• WHAT assumption must hold
+• WHAT alternative method students confuse it with
+• WHAT kind of problem setup signals this formula
 
 --------------------------------
-MULTI-STEP THINKING RULE
+VARIABLE INTERPRETATION RULE
 --------------------------------
 
-If a concept is used in multi-step problems:
+If variable meaning is testable and grounded, you may generate a card on:
 
-Generate at least one card that tests:
+• what the variable represents
+• how changing it affects the result
+• what it is commonly confused with
 
-• sequence of reasoning
-• first step identification
-• intermediate reasoning
-
-These simulate real exam problem solving.
-
-
---------------------------------
-TRAP PRIORITY RULE
---------------------------------
-
-If concepts are similar:
-
-You MUST generate confusion/comparison cards.
-
-These are HIGH PRIORITY for exam performance.
+But do NOT create multiple cards for every variable unless truly necessary.
 
 --------------------------------
 PATTERN RECOGNITION RULE
 --------------------------------
 
-If expressions resemble known mathematical structures such as:
+If an expression resembles a known mathematical structure, distribution, theorem pattern, or standard form, you should strongly consider a recognition card.
 
-q^(a−1)(1−q)^(b−1)
+Examples:
+• q^(a−1)(1−q)^(b−1)
+• e^(−λx)
+• Σ Xi
+• E[X|Y]
+• convolution integrals
+• standard linear algebra forms
+• recurrence structures
+• graph/connectivity patterns
 
-or
+Recognition cards are high-value when they help the student identify what tool or concept is being used.
 
-e^(−λx)
+--------------------------------
+PROOF AND LOGIC RULE
+--------------------------------
 
-or
+If a concept involves a proof, theorem, or derivation, deeper cards should test things like:
 
-Σ Xi
+• the key assumption that makes the result valid
+• the critical logical step
+• why the result holds
+• what step students often misuse
+• what is being shown conceptually
 
-Create recognition flashcards that test identification of the distribution or concept.
+Do NOT turn every proof into many tiny cards.
+Extract only the most exam-relevant logical moves.
+
+--------------------------------
+MULTI-STEP THINKING RULE
+--------------------------------
+
+If a concept appears in multi-step problems, deeper cards may test:
+
+• what the first step should be
+• what method to choose first
+• what intermediate quantity is needed
+• what students often skip
+• what sequence of reasoning is required
+
+These should simulate real exam decision points, not full worked solutions.
+
+--------------------------------
+DISCRETE / STRUCTURAL MATH RULE
+--------------------------------
+
+If concepts involve:
+• combinatorics
+• recurrence relations
+• graph structures
+• logical inference
+• algorithmic reasoning
+• proof by induction
+• structural counting arguments
+
+Prefer cards that test:
+• structure recognition
+• key reasoning moves
+• method selection
+• common traps
+• interpretation of the result
+
+--------------------------------
+COMPARISON / CONFUSION RULE
+--------------------------------
+
+If concepts are similar, comparison cards are HIGH VALUE.
+
+Examples:
+• PDF vs CDF
+• permutation vs combination
+• independence vs mutual exclusivity
+• variance vs standard deviation
+• PMF vs density
+• CLT vs LLN
+• integration by parts vs substitution
+
+A comparison card is especially strong when it prevents choosing the wrong method.
+
+--------------------------------
+ROLE-AWARE GENERATION RULE
+--------------------------------
+
+Use role intelligently:
+
+• core:
+  usually deserves the strongest anchor and, if budget allows, a deeper card
+
+• supporting:
+  usually deserves only one compact, high-value card
+
+• process_step:
+  card should focus on order, method selection, or what the step does
+
+• pitfall:
+  card should focus on the concrete mistake and correction
+
+• example:
+  only generate a card if the example teaches a transferable exam pattern
+
+• statistic:
+  only generate a card if the statistic itself is testable and meaningful
+
+• exam_meta:
+  generate NO card unless card_budget explicitly permits it
+  and even then avoid “this is often tested” style wording
 
 --------------------------------
 GROUNDING RULE
 --------------------------------
 
-If a concept contains an **"evidence" field**, use that evidence
-to ground the flashcard.
+If a concept contains an "evidence" field, ground the flashcard in that evidence.
 
-Do NOT invent formulas or theorems not supported by the concept list.
+Do NOT invent:
+• formulas
+• assumptions
+• examples
+• theorems
+• proof steps
+• distinctions
+that are not supported by the concept payload.
 
-Flashcards must be grounded in the extracted concepts.
-
---------------------------------
-GOOD FLASHCARD EXAMPLES
---------------------------------
-
-Good:
-
-Q: What distribution has density proportional to q^(a−1)(1−q)^(b−1)?
-A: Beta distribution.
-
-Q: When should the convolution formula be used?
-A: When finding the distribution of the sum of independent random variables.
-
-Q: What does λ represent in a Poisson distribution?
-A: The expected number of events per interval.
+Every flashcard must be grounded in the extracted concept data.
 
 --------------------------------
-BAD FLASHCARD EXAMPLES
+DUPLICATE PREVENTION RULE
 --------------------------------
 
-Bad:
+Do NOT generate:
+• multiple cards asking the same thing in different wording
+• one definition card plus another disguised definition card
+• redundant cards for nearby supporting concepts if one stronger card already captures the learning value
 
-Q: What is mathematics?
-A: A field of study.
+If two candidate cards teach the same thing, keep the stronger one.
 
-Q: What is a distribution?
-A: Something describing probability.
+--------------------------------
+QUALITY BAR
+--------------------------------
+
+A strong card should do at least one of these:
+
+• stabilize a core identity
+• improve method selection
+• prevent a likely error
+• clarify a boundary or assumption
+• help identify a pattern
+• improve proof or derivation understanding
+• strengthen multi-step reasoning
+
+A weak card is one that:
+• asks something obvious
+• merely repeats the wording of the description
+• isolates a trivial fact
+• tests vocabulary without decision value
+• could be merged into a better card
+
+Prefer strong cards only.
+
+--------------------------------
+ANSWER STYLE
+--------------------------------
+
+Answers must be:
+• short
+• precise
+• mathematically correct
+• usually 1–2 lines
+
+Do not write mini-lectures.
 
 --------------------------------
 OUTPUT FORMAT
@@ -2530,9 +2645,12 @@ Return JSON ONLY:
 Generate mathematical flashcards from these concepts.
 
 Requirements:
+- Obey card_budget strictly.
 - Return concept_name for every card.
 - Keep each card atomic.
-- Prefer formula selection and pitfall prevention over shallow recall.
+- Prefer formula selection, method choice, assumptions, and pitfall prevention over shallow recall.
+- Avoid paraphrase duplicates.
+- Prefer the smallest strong deck over maximum quantity.
 
 Concepts:
 {json.dumps(batch)}
