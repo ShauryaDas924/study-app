@@ -761,19 +761,17 @@ def batch_list(items, size=18):
         yield items[i:i + size]
 
 
-def chunk_text_by_lines(text: str, max_lines: int = 70):
+def chunk_text_by_lines(text: str, max_lines: int = 55, overlap: int = 8):
     lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
     chunks = []
-    current = []
 
-    for line in lines:
-        current.append(line)
-        if len(current) >= max_lines:
-            chunks.append("\n".join(current))
-            current = []
-
-    if current:
-        chunks.append("\n".join(current))
+    start = 0
+    while start < len(lines):
+        end = min(len(lines), start + max_lines)
+        chunks.append("\n".join(lines[start:end]))
+        if end == len(lines):
+            break
+        start = max(start + 1, end - overlap)
 
     return chunks
 
@@ -808,6 +806,23 @@ Do NOT filter too aggressively.
 If a term or idea looks testable, include it.
 
 It is better to include more relevant concepts than miss testable ones.
+
+SUPPORTING DEPTH RULE:
+Do NOT extract only headline concepts.
+
+Also include supporting concepts when they help with:
+- scenario questions
+- comparison questions
+- process-order questions
+- example-based multiple choice questions
+- demographic/platform choice questions
+- risks, tradeoffs, and consequences
+- metrics, goals, and step-specific details
+- business examples that clarify how a concept is applied
+
+If a detail helps a student distinguish, apply, or avoid confusing a concept,
+include it.
+
 Always include concepts from slides containing the words: review, summary, objectives, key points
 Use these EXAM SIGNALS:
 - headings and subheadings  
@@ -847,7 +862,7 @@ If a named law, theorem, or model appears,
 assign confidence ≥ 0.7 unless clearly minor.
 
 QUALITY RULES:
-- Return 25–80 concepts if available  
+- Return 35–120 concepts if available  
 - Cover ALL major sections of the text  
 - Include both major and supporting concepts  
 - Each concept must be concrete and testable  
@@ -1373,15 +1388,37 @@ def _matches_any(patterns: list[str], text: str) -> bool:
     return any(re.search(p, text, re.I) for p in patterns)
 
 
+def enforce_card_budgets(cards: list[dict], concepts: list[dict]) -> list[dict]:
+    budget_map = {c["name"]: int(c.get("card_budget", 0)) for c in concepts}
+    kept = []
+    counts = {}
+
+    for card in cards:
+        cname = card.get("concept_name")
+        if not cname:
+            continue
+
+        budget = budget_map.get(cname, 0)
+        current = counts.get(cname, 0)
+
+        if current >= budget:
+            continue
+
+        kept.append(card)
+        counts[cname] = current + 1
+
+    return kept
+
+
 def classify_concept_role(concept: dict) -> str:
-    """
-    Broad, domain-agnostic role assignment.
-    Works for business, science, math, humanities, etc.
-    """
     name = concept.get("name", "")
     desc = concept.get("description", "")
     evidence = concept.get("evidence", "")
     text = f"{name} {desc} {evidence}".strip()
+
+    exam_score = float(concept.get("exam_score", 0.5))
+    confidence = float(concept.get("confidence", 0.5))
+    final_score = float(concept.get("final_score", 0.5))
 
     if _matches_any(EXAM_META_PATTERNS, text):
         return "exam_meta"
@@ -1395,16 +1432,11 @@ def classify_concept_role(concept: dict) -> str:
     if _matches_any(EXAMPLE_PATTERNS, evidence) or _matches_any(EXAMPLE_PATTERNS, desc):
         return "example"
 
-    # statistic-only concepts are often weak standalone flashcards
     if _matches_any(STATISTIC_PATTERNS, evidence):
-        # if the description is mostly just a stat, mark as statistic
         if len(desc.split()) <= 16:
             return "statistic"
 
-    exam_score = float(concept.get("exam_score", 0.5))
-    confidence = float(concept.get("confidence", 0.5))
-    final_score = float(concept.get("final_score", 0.5))
-
+    # stricter core bar
     if final_score >= 0.78 or exam_score >= 0.82 or confidence >= 0.88:
         return "core"
 
@@ -1412,12 +1444,6 @@ def classify_concept_role(concept: dict) -> str:
 
 
 def assign_card_budget(concept: dict) -> int:
-    """
-    Broad budget:
-    - 0 = do not make a standalone card
-    - 1 = one good card
-    - 2 = anchor + one deeper card
-    """
     role = concept.get("role") or classify_concept_role(concept)
 
     exam_score = float(concept.get("exam_score", 0.5))
@@ -1428,18 +1454,26 @@ def assign_card_budget(concept: dict) -> int:
         return 0
 
     if role == "core":
-        return 2
-
-    if role in {"supporting", "process_step", "pitfall"}:
+        if final_score >= 0.82 or exam_score >= 0.84 or confidence >= 0.90:
+            return 2
         return 1
 
+    if role == "process_step":
+        return 1 if (confidence >= 0.72 or exam_score >= 0.75 or final_score >= 0.74) else 0
+
+    if role == "pitfall":
+        return 1 if (confidence >= 0.70 or exam_score >= 0.74 or final_score >= 0.72) else 0
+
     if role == "example":
-        return 1 if (exam_score >= 0.78 or final_score >= 0.75) else 0
+        return 1 if (confidence >= 0.78 or exam_score >= 0.78 or final_score >= 0.76) else 0
 
     if role == "statistic":
-        return 1 if (exam_score >= 0.82 or confidence >= 0.9) else 0
+        return 1 if (confidence >= 0.82 or exam_score >= 0.84) else 0
 
-    return 1
+    if role == "supporting":
+        return 1 if (confidence >= 0.68 or exam_score >= 0.72 or final_score >= 0.70) else 0
+
+    return 1 if confidence >= 0.70 else 0
 
 
 def annotate_concepts_for_flashcards(concepts: list[dict]) -> list[dict]:
@@ -1454,13 +1488,45 @@ def annotate_concepts_for_flashcards(concepts: list[dict]) -> list[dict]:
     return annotated
 
 
+def is_grounded_in_chunk(concept: dict, chunk: str) -> bool:
+    evidence = (concept.get("evidence") or "").strip().lower()
+    desc = (concept.get("description") or "").strip().lower()
+    chunk_l = chunk.lower()
+
+    if not evidence and not desc:
+        return False
+
+    # exact evidence match
+    if evidence and evidence in chunk_l:
+        return True
+
+    # prefix evidence match
+    if evidence and len(evidence) >= 20 and evidence[:40] in chunk_l:
+        return True
+
+    # token overlap on evidence
+    ev_words = [w for w in re.findall(r"[a-z0-9]+", evidence) if len(w) > 3]
+    if ev_words:
+        overlap = sum(1 for w in ev_words if w in chunk_l)
+        if overlap >= max(2, int(0.45 * len(ev_words))):
+            return True
+
+    # fallback on description
+    desc_words = [w for w in re.findall(r"[a-z0-9]+", desc) if len(w) > 3]
+    if desc_words:
+        overlap = sum(1 for w in desc_words if w in chunk_l)
+        if overlap >= max(2, int(0.5 * len(desc_words))):
+            return True
+
+    return False
+
 async def extract_concepts_from_note(note_text: str):
     cleaned = clean_note_text(note_text)
 
     if not cleaned.strip():
         return []
 
-    chunks = chunk_text_by_lines(cleaned, max_lines=70)
+    chunks = chunk_text_by_lines(cleaned, max_lines=55, overlap=8)
     all_concepts = []
 
     for chunk in chunks:
@@ -1481,13 +1547,7 @@ async def extract_concepts_from_note(note_text: str):
             continue
 
         chunk_concepts = parsed["concepts"]
-
-        grounded = []
-        for c in chunk_concepts:
-            evidence = c.get("evidence", "").lower().strip()
-            if evidence and evidence[:80] in chunk.lower():
-                grounded.append(c)
-
+        grounded = [c for c in chunk_concepts if is_grounded_in_chunk(c, chunk)]
         all_concepts.extend(grounded)
 
     concepts = all_concepts
@@ -1516,11 +1576,11 @@ async def extract_concepts_from_note(note_text: str):
             filtered.append(c)
             continue
 
-        if conf >= 0.40:
+        if conf >= 0.32:
             filtered.append(c)
             continue
 
-        if len(c["name"].split("_")) <= 2 and conf >= 0.30:
+        if len(c["name"].split("_")) <= 3 and conf >= 0.24:
             filtered.append(c)
 
     ranked = await rank_exam_importance(filtered)
@@ -1533,12 +1593,13 @@ async def extract_concepts_from_note(note_text: str):
 
     ranked.sort(key=lambda x: x["final_score"], reverse=True)
 
-    # Keep broad recall; do NOT prune concepts here just to control flashcard count.
-    # Flashcard efficiency is now handled downstream by role + card_budget.
-    ranked = semantic_dedupe(ranked, threshold=0.96)
+    # Very light dedupe only — preserve broad recall
+    ranked = semantic_dedupe(ranked, threshold=0.985)
+
+    # Keep broad extraction, control efficiency downstream in flashcard generation
     ranked = annotate_concepts_for_flashcards(ranked)
 
-    return ranked[:140]
+    return ranked[:160]
     
 
 
@@ -1802,7 +1863,7 @@ Class concepts:
 async def generate_flashcards_from_concepts(concepts: list[dict]):
     all_cards = []
 
-    for batch in batch_list(concepts, size=18):
+    for batch in batch_list(concepts, size=12):
         resp = client.chat.completions.create(
             model="gpt-5.4",
             messages=[
@@ -2209,7 +2270,9 @@ Concepts:
         if q:
             unique[q] = c
 
-    return list(unique.values())
+    deduped = dedupe_flashcards(list(unique.values()))
+    budgeted = enforce_card_budgets(deduped, concepts)
+    return budgeted
 
 async def generate_math_flashcards_from_concepts(concepts: list[dict]):
     all_cards = []
@@ -2727,15 +2790,21 @@ def flashcards_too_similar(a: dict, b: dict) -> bool:
     if qa == qb:
         return True
 
-    # same concept + same answer + very overlapping question
-    if a.get("concept_name") == b.get("concept_name") and aa == ab:
+    if aa == ab:
         a_words = set(qa.split())
         b_words = set(qb.split())
-        if not a_words or not b_words:
-            return False
-        overlap = len(a_words & b_words) / max(1, len(a_words | b_words))
-        if overlap >= 0.72:
-            return True
+        if a_words and b_words:
+            overlap = len(a_words & b_words) / max(1, len(a_words | b_words))
+            if overlap >= 0.72:
+                return True
+    
+    if a.get("concept_name") == b.get("concept_name"):
+        a_words = set(qa.split())
+        b_words = set(qb.split())
+        if a_words and b_words:
+            overlap = len(a_words & b_words) / max(1, len(a_words | b_words))
+            if overlap >= 0.78:
+                return True
 
     return False
 

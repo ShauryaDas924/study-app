@@ -222,10 +222,31 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
         }
         payload["role"] = classify_concept_role(payload)
         payload["card_budget"] = assign_card_budget(payload)
-        concept_payloads.append(payload)
+        if payload["card_budget"] > 0:
+            concept_payloads.append(payload)
+    
+    print(f"LINKED CONCEPTS: {len(linked_concepts)}")
+    print(f"CONCEPT PAYLOADS SENT TO FLASHCARDS: {len(concept_payloads)}")
+    print("TOP PAYLOADS:", [
+        {
+            "name": p["name"],
+            "role": p["role"],
+            "card_budget": p["card_budget"],
+            "confidence": p["confidence"],
+        }
+        for p in concept_payloads[:15]
+    ])
     
     if concept_payloads:
-
+        
+        concept_payloads.sort(
+            key=lambda x: (
+                x.get("card_budget", 0),
+                x.get("confidence", 0.0),
+            ),
+            reverse=True
+        )
+        
         if mode == "math":
             flashcards = await generate_math_flashcards_from_concepts(concept_payloads)
         else:

@@ -188,9 +188,18 @@ async def upload_note(
         }
         payload["role"] = classify_concept_role(payload)
         payload["card_budget"] = assign_card_budget(payload)
-        concept_payloads.append(payload)
-        concept_lookup[concept.name] = concept
+        if payload["card_budget"] > 0:
+            concept_payloads.append(payload)
 
+        concept_lookup[concept.name] = concept
+        
+    concept_payloads.sort(
+        key=lambda x: (
+            x.get("card_budget", 0),
+            x.get("confidence", 0.0),
+        ),
+        reverse=True
+    )
     generated_flashcards = await generate_flashcards_from_concepts(concept_payloads)
 
     all_flashcards = []
