@@ -5,11 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 import re
 import json
+import time
 import base64
 from sqlalchemy.dialects.postgresql import insert
 from app.models import Concept, ChatMemory, StudentPitfall, Mastery
 from app.db import get_db
-from app.services.llm import client, kimi_client, top_k_concepts, grounding_confidence
+from app.services.llm import client, kimi_client, top_k_concepts
 from app.services.file_extraction import extract_text
 from app.services.auth import get_current_user_id
 from app.services.mastery import update_mastery_value
@@ -145,6 +146,7 @@ async def homework_help(
     current_user_id: str = Depends(get_current_user_id)
 ):
     print("\n📨 Incoming Question:", body.question)
+    t0 = time.perf_counter()
     # ✅ Validate class_id
     if not body.class_id:
         raise HTTPException(400, "class_id required")
@@ -159,6 +161,7 @@ async def homework_help(
     # ----------------------
     if body.question and "analyze my work" in body.question.lower():
         print("\n🧠 ANALYZE MODE TRIGGERED")
+        question_lower = body.question.lower()
         db.add(ChatMemory(
             user_id=current_user_id,
             class_id=class_uuid,
@@ -178,9 +181,19 @@ async def homework_help(
 
         history = res.fetchall()
 
-        history_text = "\n".join(
+        raw_history_text = "\n".join(
             [f"{r[0]}: {r[1]}" for r in reversed(history)]
         )
+
+        use_history = (
+            len(body.question) < 500
+            or "continue" in question_lower
+            or "still confused" in question_lower
+            or "as i said" in question_lower
+            or "you said" in question_lower
+        )
+
+        history_text = raw_history_text if use_history else ""
         print("\n📜 Chat History Used for Analysis:")
         print(history_text)
 
@@ -283,6 +296,7 @@ Pitfalls: {pitfalls}
 Explain this naturally to the student.
 """
                 }
+                
             ],
         )
 
@@ -339,23 +353,27 @@ Explain this naturally to the student.
         role="user",
         content=body.question
     ))
-
+    question_lower = body.question.lower()
     # 1) Get concepts
+    t_concepts = time.perf_counter()
     res = await db.execute(
         select(Concept).where(
             Concept.class_id == class_uuid,
             Concept.user_id == current_user_id
         )
     )
+    print(f"⏱ concept query: {time.perf_counter() - t_concepts:.2f}s")
 
     concepts = res.scalars().all()
 
     # Retrieve concepts with scores
+    t_topk = time.perf_counter()
     scored_concepts = await top_k_concepts(
         body.question,
         concepts,
-        k=6
+        k=4
     )
+    print(f"⏱ top_k_concepts: {time.perf_counter() - t_topk:.2f}s")
 
     # Separate concepts from scores
     top_concepts = [c for score, c in scored_concepts]
@@ -386,15 +404,38 @@ Explain this naturally to the student.
     {c.pitfalls or "Students often misapply this concept."}
     """
         for c in top_concepts
-    ])[:4000]
+    ])[:2200]
 
-    # -------- MISCONCEPTION DETECTION --------
-    mis_resp = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {
-            "role": "system",
-            "content": """
+    
+    # -------- MISCONCEPTION DETECTION (ONLY WHEN NEEDED) --------
+    mis = "none"
+
+    should_run_mischeck = any(
+        phrase in question_lower
+        for phrase in [
+            "check my setup",
+            "is my timeline right",
+            "is my equation right",
+            "i think this is",
+            "would this be",
+            "my focal date is",
+            "can i use",
+            "verify this",
+            "is this right",
+            "am i wrong",
+            "did i do this right",
+            "where did i go wrong"
+        ]
+    )
+
+    if should_run_mischeck:
+        t_mis = time.perf_counter()
+        mis_resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
 You are detecting likely student misconceptions in an SOA Exam FM problem.
 
 Return ONLY one short snake_case label or 'none'.
@@ -417,17 +458,17 @@ general_algebra_error
 
 Return the single most likely misconception shown by the student.
 """
-        },
-        {
-            "role": "user",
-            "content": body.question
-        }
-    ],
-    temperature=0
-)
+                },
+                {
+                    "role": "user",
+                    "content": body.question
+                }
+            ],
+            temperature=0
+        )
 
-    mis = mis_resp.choices[0].message.content
-
+        mis = mis_resp.choices[0].message.content.strip()
+        print(f"⏱ misconception call: {time.perf_counter() - t_mis:.2f}s")
     # -------- HANDLE MISCONCEPTIONS --------
     if mis.lower().strip() != "none":
 
@@ -468,6 +509,7 @@ Return the single most likely misconception shown by the student.
         ))
 
     # -------- LOAD LAST CHATS --------
+    t_history = time.perf_counter()
     mem_res = await db.execute(
         select(ChatMemory.role, ChatMemory.content)
         .where(
@@ -477,32 +519,29 @@ Return the single most likely misconception shown by the student.
         .order_by(ChatMemory.created_at.desc())
         .limit(6)
     )
+    print(f"⏱ history query: {time.perf_counter() - t_history:.2f}s")
 
     history = mem_res.fetchall()
 
-    history_text = "\n".join(
+    raw_history_text = "\n".join(
         [f"{r[0]}: {r[1]}" for r in reversed(history)]
     )
 
+    use_history = (
+        len(body.question) < 500
+        or "continue" in question_lower
+        or "still confused" in question_lower
+        or "as i said" in question_lower
+        or "you said" in question_lower
+    )
+
+    history_text = raw_history_text if use_history else ""
+
     # -------- LOAD MASTERY --------
-    top_ids = [c.id for c in top_concepts]
-
-    mres = await db.execute(
-        select(Mastery).where(
-            Mastery.user_id == current_user_id,
-            Mastery.concept_id.in_(top_ids)
-        )
-    )
-
-    mrows = mres.scalars().all()
-
-    avg_mastery = (
-        sum(m.mastery_prob for m in mrows) / len(mrows)
-        if mrows else 0.4
-    )
+    avg_mastery = 0.4
 
     # -------- DETECT CONFUSION STATE --------
-    question_lower = body.question.lower()
+    
 
     confused = any(
         phrase in question_lower
@@ -950,6 +989,7 @@ Optimize for beginner clarity, transfer, and confidence in setup.
     system_prompt = system_prompt.replace("__AVG_MASTERY__", str(avg_mastery))
 
     # 2) LLM call
+    t_tutor = time.perf_counter()
     resp = kimi_client.chat.completions.create(
         model="kimi-k2.5",
         messages=[
@@ -960,42 +1000,25 @@ Optimize for beginner clarity, transfer, and confidence in setup.
             {
                 "role": "user",
                 "content": f"""
-STUDENT QUESTION
+Student question:
 {body.question}
 
-RECENT CHAT HISTORY
+Recent chat history:
 {history_text}
 
-DETECTED MISCONCEPTION
-{mis if mis.lower().strip() != "none" else "No clear misconception detected"}
+Detected misconception:
+{mis}
 
-RELEVANT CLASS CONCEPTS
+Relevant class concepts:
 {context}
-
-INSTRUCTION
-Teach this like an elite beginner-first FM tutor.
-
-Use the student's likely level and confusion state.
-Ground your teaching in the provided concepts when relevant.
-
-If the student has not shown setup skill yet:
-- explain the story first
-- identify cash flows first
-- draw the timeline slowly
-- state the focal date clearly
-- avoid advanced notation
-- use only one representation at a time
-- do only one small step
-- ask one tiny concrete question
-
-Prioritize beginner clarity over compactness.
 """
         }
     ],
 )
 
     answer = resp.choices[0].message.content
-
+    print(f"⏱ tutor call: {time.perf_counter() - t_tutor:.2f}s")
+    print(f"⏱ total /help: {time.perf_counter() - t0:.2f}s")
     # -------- SAVE ASSISTANT MESSAGE --------
     db.add(ChatMemory(
         user_id=current_user_id,
@@ -1006,12 +1029,9 @@ Prioritize beginner clarity over compactness.
 
     await db.commit()
 
-    conf = grounding_confidence(answer, top_concepts)
-    if conf < 0.2:
-        print("⚠️ Tutor response weakly grounded")
     return {
         "help": answer,
-        "grounding_confidence": conf
+        "grounding_confidence": None
     }
 
 
@@ -1097,7 +1117,7 @@ async def review_student_work(
     scored_concepts = await top_k_concepts(
         query,
         concepts,
-        k=6
+        k=4
     )
 
     top_concepts = [c for score, c in scored_concepts]
@@ -1117,21 +1137,15 @@ async def review_student_work(
     # -------- BUILD CONCEPT CONTEXT --------
     context = "\n\n".join([
         f"""
-    CONCEPT KNOWLEDGE
+CONCEPT KNOWLEDGE
 
-    Name: {c.name}
-
-    Definition:
-    {c.definition or c.description}
-
-    When to use:
-    {c.when_to_use or "Use this concept when solving relevant problems."}
-    
-    Common pitfall:
-    {c.pitfalls or "Students often misuse this concept."}
-    """
+Name: {c.name}
+Definition: {c.definition or c.description}
+When to use: {c.when_to_use or "Apply when this concept appears in relevant problems."}
+Common pitfall: {c.pitfalls or "Students often misapply this concept."}
+"""
         for c in top_concepts
-    ])[:3000]
+    ])[:2200]
 
     resp = kimi_client.chat.completions.create(
         model="kimi-k2.5",
