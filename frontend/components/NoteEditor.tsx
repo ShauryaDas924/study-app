@@ -8,8 +8,10 @@ import { Button } from "@/components/ui/Button";
 
 export default function NoteEditor({
   initialText = "",
+  onCreatedNote,
 }: {
   initialText?: string;
+  onCreatedNote?: (noteId: string) => void;
 }) {
   const classId = useStore((s) => s.selectedClassId);
   const qc = useQueryClient();
@@ -18,35 +20,51 @@ export default function NoteEditor({
   const [text, setText] = useState(initialText);
 
   useEffect(() => {
-    if (initialText) setText(initialText);
-  }, [initialText]);
+  if (typeof initialText === "string") {
+    setText(initialText);
+  }
+}, [initialText]);
 
   /**
    * Mutation now accepts optional "mode"
    * mode === undefined → normal extractor
    * mode === "math" → math extractor
    */
-  const createM = useMutation<
+   const createM = useMutation<
     any,
     Error,
     string | undefined
   >({
     mutationFn: async (mode) => {
-      const note = await api.createNote({
-        class_id: classId,
-        title,
-        content_json: { text },
-      });
+  const cleanText = text.trim();
+  const cleanTitle = title.trim() || "Study Note";
 
-      // Pass mode to backend
-      await api.extractConcepts(note.id, mode);
+  if (!classId) {
+    throw new Error("Please select a class first.");
+  }
 
-      return note;
-    },
-    onSuccess: async () => {
+  if (!cleanText) {
+    throw new Error("Note text is empty.");
+  }
+
+  const note = await api.createNote({
+    class_id: classId,
+    title: cleanTitle,
+    content_json: { text: cleanText },
+  });
+
+  await api.startConceptExtraction(note.id, mode);
+
+  return note;
+},
+    onSuccess: async (note) => {
       await qc.invalidateQueries({ queryKey: ["notes", classId] });
       await qc.invalidateQueries({ queryKey: ["readiness", classId] });
       setText("");
+
+      if (note?.id && onCreatedNote) {
+        onCreatedNote(note.id);
+      }
     },
   });
 

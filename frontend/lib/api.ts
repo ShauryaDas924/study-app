@@ -64,6 +64,25 @@ export interface ExtractConceptsOut {
   concepts: { id: UUID; name: string }[];
 }
 
+
+export interface StartExtractionOut {
+  message: string;
+  note_id: UUID;
+  status: string;
+  progress: number;
+  mode: string;
+}
+
+export interface ExtractionStatusOut {
+  note_id: UUID;
+  status: "idle" | "queued" | "running" | "completed" | "failed";
+  progress: number;
+  mode?: string | null;
+  error?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
 /**
  * Your backend returns questions as:
  * { id, prompt } from /practice/generate and remedial routes.
@@ -321,16 +340,15 @@ clearClass: (classId: UUID) =>
   getNote: (noteId: UUID) =>
     request<NoteOut>(`/notes/${noteId}`),
 
-  // concepts
-  extractConcepts: (noteId: UUID, mode?: string) =>
-  request<ExtractConceptsOut>(
-    `/notes/${noteId}/extract-concepts${mode ? `?mode=${mode}` : ""}`,
-    { method: "POST" }
-  ),
+  // note extraction background jobs
+  startConceptExtraction: (noteId: UUID, mode?: string) =>
+    request<StartExtractionOut>(`/notes/${noteId}/extract/start`, {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+    }),
 
-//math concepts
-extractMathConcepts: (noteId: UUID) =>
-  request<ExtractConceptsOut>(`/notes/${noteId}/extract-math-concepts`, { method: "POST" }),
+  getConceptExtractionStatus: (noteId: UUID) =>
+    request<ExtractionStatusOut>(`/notes/${noteId}/extract/status`),
   // practice
   generatePractice: (body: PracticeGenerateIn) =>
     request<PracticeGenerateOut>("/practice/generate", { method: "POST", body: JSON.stringify(body) }),

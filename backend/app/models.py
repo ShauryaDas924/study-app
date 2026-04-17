@@ -35,7 +35,14 @@ class Note(Base):
 
     title = Column(Text, nullable=False)
     content_json = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
-
+    
+    extraction_status = Column(Text, nullable=False, server_default=text("'idle'"))
+    extraction_progress = Column(Integer, nullable=False, server_default=text("0"))
+    extraction_mode = Column(Text, nullable=True)
+    extraction_error = Column(Text, nullable=True)
+    extraction_started_at = Column(DateTime(timezone=True), nullable=True)
+    extraction_finished_at = Column(DateTime(timezone=True), nullable=True)
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 

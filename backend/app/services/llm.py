@@ -6,7 +6,7 @@ import os, json
 import pathlib
 from openai import OpenAI
 import numpy as np
-
+import asyncio
 EXAMPLE_QUESTIONS_PATH = pathlib.Path("practice_engine_spec.md")
 
 with open(EXAMPLE_QUESTIONS_PATH) as f:
@@ -333,10 +333,12 @@ async def top_k_concepts(query: str, concepts: list, k=5):
     if not concepts:
         return []
 
-    qemb = client.embeddings.create(
+    emb_resp = await run_blocking(
+        client.embeddings.create,
         model="text-embedding-3-small",
-        input=query
-    ).data[0].embedding
+        input=query,
+    )
+    qemb = emb_resp.data[0].embedding
 
     qvec = np.array(qemb)
 
@@ -364,6 +366,8 @@ kimi_client = OpenAI(
     api_key=os.getenv("MOONSHOT_API_KEY"),
     base_url="https://api.moonshot.ai/v1"
 )
+async def run_blocking(fn, *args, **kwargs):
+    return await asyncio.to_thread(fn, *args, **kwargs)
 def embed_text(text: str):
     resp = client.embeddings.create(
         model="text-embedding-3-small",
@@ -435,13 +439,13 @@ NAMED_PATTERN = re.compile(
 
 async def refine_notes(note_text: str):
 
-    resp = kimi_client.chat.completions.create(
+    resp = await run_blocking(
+        kimi_client.chat.completions.create,
         model="kimi-k2.5",
         messages=[
             {"role":"system","content":NOTES_REFINEMENT_PROMPT},
             {"role":"user","content":note_text}
         ],
-        
     )
 
     raw = resp.choices[0].message.content
@@ -1530,7 +1534,8 @@ async def extract_concepts_from_note(note_text: str):
     all_concepts = []
 
     for chunk in chunks:
-        resp = kimi_client.chat.completions.create(
+        resp = await run_blocking(
+            kimi_client.chat.completions.create,
             model="kimi-k2.5",
             messages=[
                 {"role": "system", "content": CONCEPT_PROMPT},
@@ -1609,13 +1614,14 @@ async def rank_exam_importance(concepts: list[dict]):
     if not concepts:
         return []
 
-    resp = client.chat.completions.create(
+    resp = await run_blocking(
+        client.chat.completions.create,
         model="gpt-4.1-mini",
         messages=[
             {"role":"system","content":EXAM_RANK_PROMPT},
             {"role":"user","content":json.dumps(concepts)}
         ],
-        temperature=0.0
+        temperature=0.0,
     )
 
     parsed = safe_json_loads(resp.choices[0].message.content)
@@ -1643,13 +1649,13 @@ async def extract_math_concepts_from_note(note_text: str):
     if not cleaned.strip():
         return []
 
-    resp = kimi_client.chat.completions.create(
+    resp = await run_blocking(
+        kimi_client.chat.completions.create,
         model="kimi-k2.5",
         messages=[
             {"role": "system", "content": MATH_CONCEPT_PROMPT},
             {"role": "user", "content": cleaned},
         ],
-        
     )
 
     raw = resp.choices[0].message.content
@@ -1709,7 +1715,8 @@ async def generate_one_question(concepts: list, difficulty: int, subject_tag: st
             for c in concept_details
         ])
 
-    resp = client.chat.completions.create(
+    resp = await run_blocking(
+        client.chat.completions.create,
         model="gpt-4.1",
         messages=[
             {
@@ -1731,7 +1738,7 @@ async def generate_one_question(concepts: list, difficulty: int, subject_tag: st
     Use this student context:
 
     {context_blob}
-    
+
     INPUTS:
     {json.dumps(payload)}
 
@@ -1761,13 +1768,14 @@ async def generate_mcq(concepts, difficulty, subject_tag):
         "subject": subject_tag
     }
 
-    resp = client.chat.completions.create(
+    resp = await run_blocking(
+        client.chat.completions.create,
         model="gpt-4.1",
         messages=[
             {"role":"system","content":MCQ_PROMPT},
             {"role":"user","content":json.dumps(payload)}
         ],
-        temperature=0.4
+        temperature=0.4,
     )
 
     raw = resp.choices[0].message.content
@@ -1810,13 +1818,14 @@ async def propose_dependencies(concepts: list[dict]):
     ]
     """
 
-    resp = client.chat.completions.create(
+    resp = await run_blocking(
+        client.chat.completions.create,
         model="gpt-4.1-mini",
         messages=[
             {"role":"system","content":DEPENDENCY_PROMPT},
             {"role":"user","content":json.dumps(concepts)}
         ],
-        temperature=0.2
+        temperature=0.2,
     )
 
     return json.loads(resp.choices[0].message.content)
@@ -1839,22 +1848,23 @@ Always end with a question that pushes thinking.
 
 async def grounded_homework_help(question: str, concept_context: str):
 
-    resp = client.chat.completions.create(
+    resp = await run_blocking(
+        client.chat.completions.create,
         model="gpt-4.1-mini",
         messages=[
             {"role":"system","content": HOMEWORK_PROMPT},
             {
                 "role":"user",
                 "content": f"""
-Student question:
-{question}
+    Student question:
+    {question}
 
-Class concepts:
-{concept_context}
-"""
+    Class concepts:
+    {concept_context}
+    """
             }
         ],
-        temperature=0.4
+        temperature=0.4,
     )
 
     return resp.choices[0].message.content
@@ -1864,7 +1874,8 @@ async def generate_flashcards_from_concepts(concepts: list[dict]):
     all_cards = []
 
     for batch in batch_list(concepts, size=12):
-        resp = client.chat.completions.create(
+        resp = await run_blocking(
+            client.chat.completions.create,
             model="gpt-5.4",
             messages=[
                 {
@@ -2278,7 +2289,8 @@ async def generate_math_flashcards_from_concepts(concepts: list[dict]):
     all_cards = []
 
     for batch in batch_list(concepts, size=16):
-        resp = client.chat.completions.create(
+        resp = await run_blocking(
+            client.chat.completions.create,
             model="gpt-5.4",
             messages=[
                 {
