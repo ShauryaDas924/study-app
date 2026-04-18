@@ -28,14 +28,14 @@ export default function ClassesPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold">Your Classes</h1>
+     <h1 className="text-2xl font-semibold">Your Courses</h1>
 
       {/* CREATE */}
       <div className="flex gap-3">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Class name (e.g. Calculus II)"
+          placeholder="Course name (e.g. Calculus II)"
           className="border rounded-xl px-4 py-2 w-64"
         />
         <button

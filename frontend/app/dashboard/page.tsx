@@ -42,14 +42,14 @@ export default function DashboardPage() {
     className="bg-red-500 hover:bg-red-600 text-white"
     onClick={async () => {
       const ok = confirm(
-        "⚠️ This will DELETE all notes, concepts, and mastery for this class.\n\nType OK to continue."
+       "⚠️ This will DELETE all notes, concepts, and mastery for this course.\n\nType OK to continue."
       );
 
       if (!ok) return;
 
       await api.clearClass(classId);
 
-      alert("Class data cleared.");
+      alert("Course data cleared.");
 
       window.location.reload();
     }}

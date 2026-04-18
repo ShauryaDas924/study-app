@@ -6,7 +6,7 @@ import ClassSelector from "@/components/ClassSelector";
 
 const items = [
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/classes", label: "Classes" },
+  { href: "/courses", label: "Courses" },
   { href: "/notes", label: "Notes" },
   { href: "/practice", label: "Practice" },
   { href: "/exam", label: "Exam" },
