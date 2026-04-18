@@ -6,7 +6,7 @@ import os, json
 import pathlib
 from openai import OpenAI
 import numpy as np
-import asyncio
+from starlette.concurrency import run_in_threadpool
 EXAMPLE_QUESTIONS_PATH = pathlib.Path("practice_engine_spec.md")
 
 with open(EXAMPLE_QUESTIONS_PATH) as f:
@@ -333,12 +333,11 @@ async def top_k_concepts(query: str, concepts: list, k=5):
     if not concepts:
         return []
 
-    emb_resp = await run_blocking(
-        client.embeddings.create,
+    qemb_resp = await openai_embedding_create(
         model="text-embedding-3-small",
-        input=query,
+        input=query
     )
-    qemb = emb_resp.data[0].embedding
+    qemb = qemb_resp.data[0].embedding
 
     qvec = np.array(qemb)
 
@@ -349,7 +348,7 @@ async def top_k_concepts(query: str, concepts: list, k=5):
         # AUTO-GENERATE embedding if missing
         if c.embedding is None:
             text = f"{c.name} {c.description or ''} {c.definition or ''}"
-            c.embedding = embed_text(text)
+            c.embedding = await run_in_threadpool(embed_text, text)
 
         cvec = np.array(c.embedding)
 
@@ -361,13 +360,21 @@ async def top_k_concepts(query: str, concepts: list, k=5):
     return scored[:k]
  
 from jsonschema import validate, ValidationError
+
+async def openai_chat_create(**kwargs):
+    return await run_in_threadpool(client.chat.completions.create, **kwargs)
+
+async def kimi_chat_create(**kwargs):
+    return await run_in_threadpool(kimi_client.chat.completions.create, **kwargs)
+
+async def openai_embedding_create(**kwargs):
+    return await run_in_threadpool(client.embeddings.create, **kwargs)
+    
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 kimi_client = OpenAI(
     api_key=os.getenv("MOONSHOT_API_KEY"),
     base_url="https://api.moonshot.ai/v1"
 )
-async def run_blocking(fn, *args, **kwargs):
-    return await asyncio.to_thread(fn, *args, **kwargs)
 def embed_text(text: str):
     resp = client.embeddings.create(
         model="text-embedding-3-small",
@@ -439,13 +446,13 @@ NAMED_PATTERN = re.compile(
 
 async def refine_notes(note_text: str):
 
-    resp = await run_blocking(
-        kimi_client.chat.completions.create,
+    resp = await kimi_chat_create(
         model="kimi-k2.5",
         messages=[
             {"role":"system","content":NOTES_REFINEMENT_PROMPT},
             {"role":"user","content":note_text}
         ],
+        
     )
 
     raw = resp.choices[0].message.content
@@ -1534,8 +1541,7 @@ async def extract_concepts_from_note(note_text: str):
     all_concepts = []
 
     for chunk in chunks:
-        resp = await run_blocking(
-            kimi_client.chat.completions.create,
+        resp = await kimi_chat_create(
             model="kimi-k2.5",
             messages=[
                 {"role": "system", "content": CONCEPT_PROMPT},
@@ -1599,7 +1605,7 @@ async def extract_concepts_from_note(note_text: str):
     ranked.sort(key=lambda x: x["final_score"], reverse=True)
 
     # Very light dedupe only — preserve broad recall
-    ranked = semantic_dedupe(ranked, threshold=0.985)
+    ranked = await semantic_dedupe(ranked, threshold=0.985)
 
     # Keep broad extraction, control efficiency downstream in flashcard generation
     ranked = annotate_concepts_for_flashcards(ranked)
@@ -1614,14 +1620,13 @@ async def rank_exam_importance(concepts: list[dict]):
     if not concepts:
         return []
 
-    resp = await run_blocking(
-        client.chat.completions.create,
+    resp = await openai_chat_create(
         model="gpt-4.1-mini",
         messages=[
             {"role":"system","content":EXAM_RANK_PROMPT},
             {"role":"user","content":json.dumps(concepts)}
         ],
-        temperature=0.0,
+        temperature=0.0
     )
 
     parsed = safe_json_loads(resp.choices[0].message.content)
@@ -1649,13 +1654,13 @@ async def extract_math_concepts_from_note(note_text: str):
     if not cleaned.strip():
         return []
 
-    resp = await run_blocking(
-        kimi_client.chat.completions.create,
+    resp = await kimi_chat_create(
         model="kimi-k2.5",
         messages=[
             {"role": "system", "content": MATH_CONCEPT_PROMPT},
             {"role": "user", "content": cleaned},
         ],
+        
     )
 
     raw = resp.choices[0].message.content
@@ -1694,7 +1699,7 @@ async def extract_math_concepts_from_note(note_text: str):
             + 0.45 * c.get("exam_score", 0.5)
         )
 
-    ranked = semantic_dedupe(ranked, threshold=0.97)
+    ranked = await semantic_dedupe(ranked, threshold=0.97)
     ranked = annotate_concepts_for_flashcards(ranked)
 
     return ranked[:120]
@@ -1715,8 +1720,7 @@ async def generate_one_question(concepts: list, difficulty: int, subject_tag: st
             for c in concept_details
         ])
 
-    resp = await run_blocking(
-        client.chat.completions.create,
+    resp = await openai_chat_create(
         model="gpt-4.1",
         messages=[
             {
@@ -1738,7 +1742,7 @@ async def generate_one_question(concepts: list, difficulty: int, subject_tag: st
     Use this student context:
 
     {context_blob}
-
+    
     INPUTS:
     {json.dumps(payload)}
 
@@ -1768,14 +1772,13 @@ async def generate_mcq(concepts, difficulty, subject_tag):
         "subject": subject_tag
     }
 
-    resp = await run_blocking(
-        client.chat.completions.create,
+    resp = await openai_chat_create(
         model="gpt-4.1",
         messages=[
             {"role":"system","content":MCQ_PROMPT},
             {"role":"user","content":json.dumps(payload)}
         ],
-        temperature=0.4,
+        temperature=0.4
     )
 
     raw = resp.choices[0].message.content
@@ -1818,14 +1821,13 @@ async def propose_dependencies(concepts: list[dict]):
     ]
     """
 
-    resp = await run_blocking(
-        client.chat.completions.create,
+    resp = await openai_chat_create(
         model="gpt-4.1-mini",
         messages=[
             {"role":"system","content":DEPENDENCY_PROMPT},
             {"role":"user","content":json.dumps(concepts)}
         ],
-        temperature=0.2,
+        temperature=0.2
     )
 
     return json.loads(resp.choices[0].message.content)
@@ -1848,23 +1850,22 @@ Always end with a question that pushes thinking.
 
 async def grounded_homework_help(question: str, concept_context: str):
 
-    resp = await run_blocking(
-        client.chat.completions.create,
+    resp = await openai_chat_create(
         model="gpt-4.1-mini",
         messages=[
             {"role":"system","content": HOMEWORK_PROMPT},
             {
                 "role":"user",
                 "content": f"""
-    Student question:
-    {question}
+Student question:
+{question}
 
-    Class concepts:
-    {concept_context}
-    """
+Class concepts:
+{concept_context}
+"""
             }
         ],
-        temperature=0.4,
+        temperature=0.4
     )
 
     return resp.choices[0].message.content
@@ -1874,8 +1875,7 @@ async def generate_flashcards_from_concepts(concepts: list[dict]):
     all_cards = []
 
     for batch in batch_list(concepts, size=12):
-        resp = await run_blocking(
-            client.chat.completions.create,
+        resp = await openai_chat_create(
             model="gpt-5.4",
             messages=[
                 {
@@ -2289,8 +2289,7 @@ async def generate_math_flashcards_from_concepts(concepts: list[dict]):
     all_cards = []
 
     for batch in batch_list(concepts, size=16):
-        resp = await run_blocking(
-            client.chat.completions.create,
+        resp = await openai_chat_create(
             model="gpt-5.4",
             messages=[
                 {
@@ -2749,15 +2748,16 @@ Concepts:
             unique[q] = c
 
     deduped = dedupe_flashcards(list(unique.values()))
-    return deduped
+    budgeted = enforce_card_budgets(deduped, concepts)
+    return budgeted
     
-def semantic_dedupe(concepts, threshold=0.96):
+async def semantic_dedupe(concepts, threshold=0.96):
     unique = []
 
     for c in concepts:
         if "embedding" not in c:
             text = f"{c.get('name','')} {c.get('description','')}"
-            c["embedding"] = embed_text(text)
+            c["embedding"] = await run_in_threadpool(embed_text, text)
 
         cvec = np.array(c["embedding"])
         keep = True
@@ -2772,7 +2772,7 @@ def semantic_dedupe(concepts, threshold=0.96):
 
             if "embedding" not in u:
                 text = f"{u.get('name','')} {u.get('description','')}"
-                u["embedding"] = embed_text(text)
+                u["embedding"] = await run_in_threadpool(embed_text, text)
 
             uvec = np.array(u["embedding"])
 

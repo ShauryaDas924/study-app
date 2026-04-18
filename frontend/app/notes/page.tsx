@@ -135,7 +135,24 @@ useEffect(() => {
   const extractionStatus = extractionStatusQ.data?.status ?? "idle";
   const extractionProgress = extractionStatusQ.data?.progress ?? 0;
   const extractionError = extractionStatusQ.data?.error ?? null;
-
+  const extractionStage =
+    extractionProgress >= 100
+      ? "Completed"
+      : extractionProgress >= 90
+      ? "Saving flashcards"
+      : extractionProgress >= 80
+      ? "Generating flashcards"
+      : extractionProgress >= 72
+      ? "Preparing flashcard payloads"
+      : extractionProgress >= 50
+      ? "Saving concepts"
+      : extractionProgress >= 28
+      ? "Enriching concepts"
+      : extractionProgress >= 12
+      ? "Extracting concepts"
+      : extractionStatus === "queued"
+      ? "Queued"
+      : "Idle";
   /* ===============================
      UI
   =============================== */
@@ -289,8 +306,8 @@ useEffect(() => {
             <div className="mt-4 space-y-2">
               <div className="flex items-center justify-between text-sm">
                 <div className="font-medium text-slate-700">
-                  Extraction Status: {extractionStatus}
-                </div>
+  Extraction Status: {extractionStatus} — {extractionStage}
+</div>
                 <div className="text-slate-500">{extractionProgress}%</div>
               </div>
 
