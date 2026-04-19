@@ -46,11 +46,16 @@ export interface NoteCreateIn {
   class_id: UUID;
   title: string;
   content_json: Record<string, unknown>;
+  auto_extract?: boolean;
+  mode?: string;
 }
 
 export interface NoteCreateOut {
   id: UUID;
   title: string;
+  status?: string;
+  progress?: number;
+  mode?: string;
 }
 
 export interface NoteOut {

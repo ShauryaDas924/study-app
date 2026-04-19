@@ -18,8 +18,13 @@ export default function NoteEditor({
 
   const [title, setTitle] = useState("Study Note");
   const [text, setText] = useState(initialText);
-
+const [localError, setLocalError] = useState<string | null>(null);
   useEffect(() => {
+  console.log("[NoteEditor] initialText changed", {
+    initialTextLength: typeof initialText === "string" ? initialText.length : -1,
+    preview: typeof initialText === "string" ? initialText.slice(0, 120) : null,
+  });
+
   if (typeof initialText === "string") {
     setText(initialText);
   }
@@ -39,6 +44,18 @@ export default function NoteEditor({
   const cleanText = text.trim();
   const cleanTitle = title.trim() || "Study Note";
 
+  console.log("[NoteEditor] clicked save", {
+    mode,
+    classId,
+    title,
+    cleanTitle,
+    textLength: text.length,
+    cleanTextLength: cleanText.length,
+    preview: cleanText.slice(0, 120),
+  });
+
+  setLocalError(null);
+
   if (!classId) {
     throw new Error("Please select a class first.");
   }
@@ -51,13 +68,16 @@ export default function NoteEditor({
     class_id: classId,
     title: cleanTitle,
     content_json: { text: cleanText },
+    auto_extract: true,
+    mode: mode ?? "normal",
   });
 
-  await api.startConceptExtraction(note.id, mode);
+  console.log("[NoteEditor] /notes response", note);
 
   return note;
 },
     onSuccess: async (note) => {
+console.log("[NoteEditor] onSuccess", note);
       await qc.invalidateQueries({ queryKey: ["notes", classId] });
       await qc.invalidateQueries({ queryKey: ["readiness", classId] });
       setText("");
@@ -65,7 +85,20 @@ export default function NoteEditor({
       if (note?.id && onCreatedNote) {
         onCreatedNote(note.id);
       }
+if (note?.id) {
+  localStorage.setItem("activeExtractionNoteId", note.id);
+}
+if (note?.id && classId) {
+  localStorage.setItem(
+    "activeExtractionMeta",
+    JSON.stringify({ noteId: note.id, classId })
+  );
+}
     },
+onError: (err) => {
+  console.error("[NoteEditor] create note failed", err);
+  setLocalError(err.message || "Failed to create note.");
+},
   });
 
   return (
@@ -82,7 +115,11 @@ export default function NoteEditor({
         value={text}
         onChange={(e) => setText(e.target.value)}
       />
-
+{localError && (
+  <div className="text-sm text-red-600">
+    {localError}
+  </div>
+)}
       <div className="flex gap-3">
         {/* Normal Extract */}
         <Button

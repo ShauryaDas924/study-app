@@ -174,12 +174,18 @@ useEffect(() => {
           />
 
           <UploadNotes
-            onExtracted={(text, fc) => {
-              setUploadedText(text);
-              setFlashcards(fc);
-              localStorage.setItem("flashcards", JSON.stringify(fc));
-            }}
-          />
+  onExtracted={(text, fc) => {
+    console.log("[NotesPage] UploadNotes onExtracted", {
+      textLength: typeof text === "string" ? text.length : -1,
+      preview: typeof text === "string" ? text.slice(0, 120) : null,
+      flashcards: Array.isArray(fc) ? fc.length : -1,
+    });
+
+    setUploadedText(text);
+    setFlashcards(fc);
+    localStorage.setItem("flashcards", JSON.stringify(fc));
+  }}
+/>
 
                     <NoteEditor
             key={selectedNoteId || "new"}

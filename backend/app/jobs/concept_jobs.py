@@ -24,11 +24,13 @@ from app.services.llm import (
 
 
 async def concept_extraction_job(note_id: str, user_id: str, mode: str | None = None):
+    print(f"[concept_job] START note_id={note_id} user_id={user_id} mode={mode}")
     await run_concept_extraction_async(
         UUID(note_id),
         UUID(user_id),
         mode,
     )
+    print(f"[concept_job] END note_id={note_id}")
 
 
 def flatten_note_json(content):
@@ -67,7 +69,11 @@ async def set_progress(
         note.extraction_finished_at = datetime.now(timezone.utc)
 
     await db.commit()
-
+    print(
+        f"[concept_job] note_id={note.id} status={note.extraction_status} "
+        f"progress={note.extraction_progress} mode={note.extraction_mode} "
+        f"error={note.extraction_error}"
+    )
 
 async def run_concept_extraction_async(
     note_id: UUID,

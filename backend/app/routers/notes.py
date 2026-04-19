@@ -15,6 +15,8 @@ class NoteIn(BaseModel):
     class_id: UUID
     title: str
     content_json: dict
+    auto_extract: bool = False
+    mode: Optional[str] = None
     
 class StartExtractionIn(BaseModel):
     mode: Optional[str] = None
@@ -38,11 +40,50 @@ class ExtractionStatusOut(BaseModel):
     finished_at: Optional[str] = None
     
 @router.post("")
-async def create_note(payload: NoteIn, db: AsyncSession = Depends(get_db), user_id: UUID = Depends(get_current_user_id)):
-    obj = Note(user_id=user_id, class_id=payload.class_id, title=payload.title, content_json=payload.content_json)
+async def create_note(
+    payload: NoteIn,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
+):
+    obj = Note(
+        user_id=user_id,
+        class_id=payload.class_id,
+        title=payload.title,
+        content_json=payload.content_json,
+    )
     db.add(obj)
     await db.commit()
     await db.refresh(obj)
+
+    mode = payload.mode or "normal"
+
+    if payload.auto_extract:
+        obj.extraction_status = "queued"
+        obj.extraction_progress = 0
+        obj.extraction_mode = mode
+        obj.extraction_error = None
+        obj.extraction_started_at = None
+        obj.extraction_finished_at = None
+        await db.commit()
+
+        print(f"[notes.create_note] queued extraction for note={obj.id} mode={mode}")
+
+        background_tasks.add_task(
+            concept_extraction_job,
+            str(obj.id),
+            str(user_id),
+            mode,
+        )
+
+        return {
+            "id": str(obj.id),
+            "title": obj.title,
+            "status": "queued",
+            "progress": 0,
+            "mode": mode,
+        }
+
     return {"id": str(obj.id), "title": obj.title}
 
 @router.get("/by-class/{class_id}")
