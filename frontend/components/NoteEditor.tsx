@@ -9,9 +9,11 @@ import { Button } from "@/components/ui/Button";
 export default function NoteEditor({
   initialText = "",
   onCreatedNote,
+  disableCreate = false,
 }: {
   initialText?: string;
   onCreatedNote?: (noteId: string) => void;
+  disableCreate?: boolean;
 }) {
   const classId = useStore((s) => s.selectedClassId);
   const qc = useQueryClient();
@@ -121,10 +123,15 @@ onError: (err) => {
   </div>
 )}
       <div className="flex gap-3">
+{disableCreate && (
+  <div className="text-xs text-slate-500">
+    This uploaded note was already saved and extraction has already started below.
+  </div>
+)}
         {/* Normal Extract */}
         <Button
           onClick={() => createM.mutate(undefined)}
-          disabled={createM.isPending}
+         disabled={createM.isPending || disableCreate}
         >
           Save Note + Extract Concepts
         </Button>
@@ -133,7 +140,7 @@ onError: (err) => {
         <Button
           className="bg-blue-600 hover:bg-blue-700 text-white"
           onClick={() => createM.mutate("math")}
-          disabled={createM.isPending}
+         disabled={createM.isPending || disableCreate}
         >
           Extract Math Concepts
         </Button>

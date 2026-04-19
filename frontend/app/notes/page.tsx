@@ -185,13 +185,29 @@ useEffect(() => {
     setFlashcards(fc);
     localStorage.setItem("flashcards", JSON.stringify(fc));
   }}
+  onCreatedNote={async (noteId) => {
+    setSelectedNoteId(noteId);
+
+    await qc.invalidateQueries({ queryKey: ["notes", classId] });
+    await qc.invalidateQueries({ queryKey: ["readiness", classId] });
+
+    localStorage.setItem("activeExtractionNoteId", noteId);
+
+    if (classId) {
+      localStorage.setItem(
+        "activeExtractionMeta",
+        JSON.stringify({ noteId, classId })
+      );
+    }
+  }}
 />
 
                     <NoteEditor
-            key={selectedNoteId || "new"}
-            initialText={uploadedText}
-            onCreatedNote={(noteId) => setSelectedNoteId(noteId)}
-          />
+  key={selectedNoteId || "new"}
+  initialText={uploadedText}
+  onCreatedNote={(noteId) => setSelectedNoteId(noteId)}
+  disableCreate={!!selectedNoteId && !!uploadedText}
+/>
 
           {/* ================= FLASHCARDS ================= */}
           {allFlashcards.length > 0 && (
