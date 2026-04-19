@@ -173,7 +173,7 @@ useEffect(() => {
             subtitle="Notes are stored as content_json."
           />
 
-          <UploadNotes
+        <UploadNotes
   onExtracted={(text, fc) => {
     console.log("[NotesPage] UploadNotes onExtracted", {
       textLength: typeof text === "string" ? text.length : -1,
@@ -286,33 +286,7 @@ useEffect(() => {
         <CardHeader
           title="Selected Note"
           subtitle="Extract concepts multiple times if needed."
-          right={
-            selectedNoteId && (
-              <div className="flex gap-2">
-  <Button
-  onClick={() => extractM.mutate({ noteId: selectedNoteId })}
-  disabled={
-    extractM.isPending ||
-    extractionStatus === "queued" ||
-    extractionStatus === "running"
-  }
->
-  Extract Concepts
-</Button>
-
-<Button
-  onClick={() => extractM.mutate({ noteId: selectedNoteId, mode: "math" })}
-  disabled={
-    extractM.isPending ||
-    extractionStatus === "queued" ||
-    extractionStatus === "running"
-  }
->
-  Extract Math Concepts
-</Button>
-</div>
-            )
-          }
+         
         />
 
                {!selectedNoteId ? (
