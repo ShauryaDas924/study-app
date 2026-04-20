@@ -52,7 +52,7 @@ export default function NotesPage() {
     refetchInterval: (query) => {
       const data: any = query.state.data;
       const status = data?.status;
-      if (status === "queued" || status === "running") return 2000;
+     if (status === "queued" || status === "running") return 5000;
       return false;
     },
   });
