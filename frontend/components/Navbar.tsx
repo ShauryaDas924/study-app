@@ -5,16 +5,28 @@ import { usePathname } from "next/navigation";
 import ClassSelector from "@/components/ClassSelector";
 
 const items = [
-  { href: "/dashboard", label: "Dashboard" },
+   { href: "/dashboard", label: "Dashboard" },
+
   { href: "/courses", label: "Courses" },
+
   { href: "/notes", label: "Notes" },
+
   { href: "/practice", label: "Practice" },
+
   { href: "/exam", label: "Exam" },
+
   { href: "/analytics", label: "Analytics" },
+
   { href: "/planner", label: "Planner" },
+
+  { href: "/blurting", label: "Blurting" },
+
   { href: "/tutor", label: "Tutor" },
+
   { href: "/homework", label: "Homework" },
+
   { href: "/flashcards", label: "Flashcards" },
+
   { href: "/insights", label: "Insights" },
 ];
 
