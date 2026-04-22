@@ -2,7 +2,6 @@ import os
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import declarative_base
-from fastapi import Depends
 
 load_dotenv()
 
@@ -14,20 +13,23 @@ engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     future=True,
-
-    pool_size=20,
-    max_overflow=40,
+    pool_size=2,
+    max_overflow=0,
     pool_timeout=60,
     pool_recycle=1800,
     pool_pre_ping=True,
-
     connect_args={
         "server_settings": {
-            "statement_timeout": "180000"  # 60 seconds
+            "statement_timeout": "180000"
         }
-    }
+    },
 )
-AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+AsyncSessionLocal = async_sessionmaker(
+    engine,
+    expire_on_commit=False,
+    class_=AsyncSession,
+)
 
 Base = declarative_base()
 
