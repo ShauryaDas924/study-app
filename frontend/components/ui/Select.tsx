@@ -8,8 +8,7 @@ export function Select({
     <select
       {...props}
       className={[
-        "w-full rounded-xl border border-slate-200 px-3 py-2 text-sm bg-white",
-        "focus:outline-none focus:ring-2 focus:ring-green-200",
+        "w-full app-input px-3 py-2 text-sm bg-white/90",
         className,
       ].join(" ")}
     />

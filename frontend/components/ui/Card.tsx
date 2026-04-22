@@ -10,9 +10,7 @@ export function Card({
   return (
     <div
       className={[
-        "bg-white rounded-2xl border border-slate-100",
-        "shadow-sm hover:shadow-md transition",
-        "p-6",
+        "app-panel rounded-3xl p-6 transition",
         className,
       ].join(" ")}
     >
@@ -31,11 +29,15 @@ export function CardHeader({
   right?: ReactNode;
 }) {
   return (
-    <div className="mb-5 flex justify-between">
+    <div className="mb-5 flex justify-between gap-4">
       <div>
-        <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
+        <h2 className="text-lg font-semibold" style={{ color: "var(--text-main)" }}>
+          {title}
+        </h2>
         {subtitle && (
-          <p className="text-sm text-slate-500 mt-1">{subtitle}</p>
+          <p className="text-sm mt-1" style={{ color: "var(--text-soft)" }}>
+            {subtitle}
+          </p>
         )}
       </div>
       {right}

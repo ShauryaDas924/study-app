@@ -20,7 +20,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import MindMapNode, { MindMapNodeData } from "./MindMapNode";
 import styles from "./BlurtingMindMap.module.css";
 import { useStore } from "@/store/useStore";
-type Tool = "select" | "rectangle" | "circle" | "text";
+type Tool = "select" | "rectangle" | "circle" | "text" | "pill" | "diamond";
 
 type CustomNode = Node<MindMapNodeData>;
 type MindMapStorage = {
@@ -38,31 +38,67 @@ const classId = useStore((s) => s.selectedClassId);
   const [nodes, setNodes] = useState<CustomNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
 
-  const attachCallbacks = useCallback(
-    (nodesToWrap: CustomNode[]) =>
-      nodesToWrap.map((node) => ({
-        ...node,
-        data: {
-          ...node.data,
-          onChangeLabel: (id: string, nextValue: string) => {
-            setNodes((current) =>
-              current.map((item) =>
-                item.id === id
-                  ? {
-                      ...item,
-                      data: {
-                        ...item.data,
-                        label: nextValue,
-                      },
-                    }
-                  : item
-              )
-            );
-          },
+ const attachCallbacks = useCallback(
+  (nodesToWrap: CustomNode[]) =>
+    nodesToWrap.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        onChangeLabel: (id: string, nextValue: string) => {
+          setNodes((current) =>
+            current.map((item) =>
+              item.id === id
+                ? {
+                    ...item,
+                    data: {
+                      ...item.data,
+                      label: nextValue,
+                    },
+                  }
+                : item
+            )
+          );
         },
-      })),
-    []
-  );
+        onResizeNode: (
+          id: string,
+          direction: "wider" | "narrower" | "taller" | "shorter"
+        ) => {
+          setNodes((current) =>
+            current.map((item) => {
+              if (item.id !== id) return item;
+
+              const currentWidth = item.data.width ?? 180;
+              const currentHeight = item.data.height ?? 80;
+
+              const nextWidth =
+                direction === "wider"
+                  ? Math.min(currentWidth + 20, 320)
+                  : direction === "narrower"
+                  ? Math.max(currentWidth - 20, 100)
+                  : currentWidth;
+
+              const nextHeight =
+                direction === "taller"
+                  ? Math.min(currentHeight + 20, 240)
+                  : direction === "shorter"
+                  ? Math.max(currentHeight - 20, 56)
+                  : currentHeight;
+
+              return {
+                ...item,
+                data: {
+                  ...item.data,
+                  width: nextWidth,
+                  height: nextHeight,
+                },
+              };
+            })
+          );
+        },
+      },
+    })),
+  []
+);
 useEffect(() => {
   if (!classId) return;
 
@@ -86,9 +122,10 @@ useEffect(() => {
     nodes: nodes.map((node) => ({
       ...node,
       data: {
-        ...node.data,
-        onChangeLabel: undefined as never,
-      },
+  ...node.data,
+  onChangeLabel: undefined as never,
+  onResizeNode: undefined as never,
+},
     })),
     edges,
   };
@@ -117,35 +154,56 @@ useEffect(() => {
     );
   }, []);
 
-  const makeNode = useCallback(
-    (
-      variant: "rectangle" | "circle" | "text",
-      x: number,
-      y: number
-    ): CustomNode => {
-      const defaultLabel =
-        variant === "rectangle"
-          ? "Main concept"
-          : variant === "circle"
-          ? "Linked idea"
-          : "Short label";
+ const makeNode = useCallback(
+  (
+    variant: "rectangle" | "circle" | "text" | "pill" | "diamond",
+    x: number,
+    y: number
+  ): CustomNode => {
+    const defaultLabel =
+      variant === "rectangle"
+        ? "Main concept"
+        : variant === "circle"
+        ? "Linked idea"
+        : variant === "pill"
+        ? "Key point"
+        : variant === "diamond"
+        ? "Decision / event"
+        : "Short label";
 
-      return {
-        id: `${variant}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        type: "mindNode",
-        position: { x, y },
-        data: {
-          label: defaultLabel,
-          variant,
-          onChangeLabel: () => {},
-        },
-      };
-    },
-    []
-  );
+    const defaultWidth =
+      variant === "circle" ? 150 :
+      variant === "text" ? 170 :
+      variant === "pill" ? 200 :
+      variant === "diamond" ? 150 :
+      190;
 
-  const addNodeAtCenter = useCallback(
-    (variant: "rectangle" | "circle" | "text") => {
+    const defaultHeight =
+      variant === "circle" ? 150 :
+      variant === "text" ? 64 :
+      variant === "pill" ? 84 :
+      variant === "diamond" ? 150 :
+      86;
+
+    return {
+      id: `${variant}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: "mindNode",
+      position: { x, y },
+      data: {
+        label: defaultLabel,
+        variant,
+        width: defaultWidth,
+        height: defaultHeight,
+        onChangeLabel: () => {},
+        onResizeNode: () => {},
+      },
+    };
+  },
+  []
+);
+
+ const addNodeAtCenter = useCallback(
+  (variant: "rectangle" | "circle" | "text" | "pill" | "diamond") => {
       const node = makeNode(variant, 220 + Math.random() * 160, 160 + Math.random() * 140);
       setNodes((current) => attachCallbacks([...current, node]));
       setTool("select");
@@ -158,11 +216,15 @@ useEffect(() => {
       if (tool === "select") return;
 
       const variant =
-        tool === "rectangle"
-          ? "rectangle"
-          : tool === "circle"
-          ? "circle"
-          : "text";
+  tool === "rectangle"
+    ? "rectangle"
+    : tool === "circle"
+    ? "circle"
+    : tool === "pill"
+    ? "pill"
+    : tool === "diamond"
+    ? "diamond"
+    : "text";
 
       const position = reactFlow.screenToFlowPosition({
         x: event.clientX,
@@ -204,11 +266,13 @@ useEffect(() => {
 }, [classId]);
 
   const helperText = useMemo(() => {
-    if (tool === "rectangle") return "Click the canvas to place a rectangle node.";
-    if (tool === "circle") return "Click the canvas to place a circle node.";
-    if (tool === "text") return "Click the canvas to place a text label node.";
-    return "Select/move nodes, then drag handles to create connectors.";
-  }, [tool]);
+  if (tool === "rectangle") return "Click the canvas to place a rectangle node.";
+  if (tool === "circle") return "Click the canvas to place a circle node.";
+  if (tool === "pill") return "Click the canvas to place a pill node.";
+  if (tool === "diamond") return "Click the canvas to place a diamond node.";
+  if (tool === "text") return "Click the canvas to place a text label node.";
+  return "Select/move nodes, then drag handles to create connectors. Select a node to resize it.";
+}, [tool]);
 if (!classId) {
   return (
     <div className={styles.panelWrap}>
@@ -265,7 +329,21 @@ if (!classId) {
           >
             Circle Node
           </button>
+<button
+  type="button"
+  className={`${styles.toolButton} ${tool === "pill" ? styles.toolButtonActive : ""}`}
+  onClick={() => setTool("pill")}
+>
+  Pill Node
+</button>
 
+<button
+  type="button"
+  className={`${styles.toolButton} ${tool === "diamond" ? styles.toolButtonActive : ""}`}
+  onClick={() => setTool("diamond")}
+>
+  Diamond Node
+</button>
           <button
             type="button"
             className={`${styles.toolButton} ${tool === "text" ? styles.toolButtonActive : ""}`}
@@ -289,6 +367,23 @@ if (!classId) {
           >
             Quick Add Circle
           </button>
+
+<button
+  type="button"
+  className={styles.toolButton}
+  onClick={() => addNodeAtCenter("pill")}
+>
+  Quick Add Pill
+</button>
+
+<button
+  type="button"
+  className={styles.toolButton}
+  onClick={() => addNodeAtCenter("diamond")}
+>
+  Quick Add Diamond
+</button>
+
 
           <button
             type="button"
