@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import styles from "./BlurtingMindMap.module.css";
-
+import { useStore } from "@/store/useStore";
 type BubbleTone = "pink" | "green" | "yellow";
 
 type BubbleItem = {
@@ -17,7 +17,11 @@ type BubbleItem = {
   delay: number;
   rotate: number;
 };
-
+type BlurtingStorage = {
+  duration: number;
+  remainingTime: number;
+  bubbles: BubbleItem[];
+};
 const TIMER_OPTIONS = [
   { label: "1 min", value: 60 },
   { label: "3 min", value: 180 },
@@ -41,14 +45,47 @@ function randomTone(): BubbleTone {
 
 export default function BlurtingBoard() {
   const boardRef = useRef<HTMLDivElement | null>(null);
-
+const classId = useStore((s) => s.selectedClassId);
   const [duration, setDuration] = useState<number>(60);
   const [remainingTime, setRemainingTime] = useState<number>(60);
   const [isRunning, setIsRunning] = useState(false);
   const [timeUp, setTimeUp] = useState(false);
   const [input, setInput] = useState("");
   const [bubbles, setBubbles] = useState<BubbleItem[]>([]);
+useEffect(() => {
+  if (!classId) return;
 
+  const saved = localStorage.getItem(`blurting_board_${classId}`);
+  if (!saved) return;
+
+  try {
+    const parsed: BlurtingStorage = JSON.parse(saved);
+    setDuration(parsed.duration ?? 60);
+    setRemainingTime(parsed.remainingTime ?? parsed.duration ?? 60);
+    setBubbles(parsed.bubbles ?? []);
+    setTimeUp(false);
+    setIsRunning(false);
+  } catch (error) {
+    console.error("Failed to load blurting board from localStorage", error);
+  }
+}, [classId]);
+
+useEffect(() => {
+  if (!classId) return;
+
+  const payload: BlurtingStorage = {
+    duration,
+    remainingTime,
+    bubbles,
+  };
+
+  localStorage.setItem(`blurting_board_${classId}`, JSON.stringify(payload));
+}, [classId, duration, remainingTime, bubbles]);
+useEffect(() => {
+  if (!isRunning) {
+    setRemainingTime(duration);
+  }
+}, [duration, isRunning]);
   useEffect(() => {
     if (!isRunning) return;
 
@@ -85,12 +122,16 @@ export default function BlurtingBoard() {
   };
 
   const clearAll = () => {
-    setBubbles([]);
-    setInput("");
-    setTimeUp(false);
-    setIsRunning(false);
-    setRemainingTime(duration);
-  };
+  setBubbles([]);
+  setInput("");
+  setTimeUp(false);
+  setIsRunning(false);
+  setRemainingTime(duration);
+
+  if (classId) {
+    localStorage.removeItem(`blurting_board_${classId}`);
+  }
+};
 
   const createBubble = (text: string) => {
     const board = boardRef.current;
@@ -135,7 +176,16 @@ export default function BlurtingBoard() {
   const handleSubmit = () => {
     createBubble(input);
   };
-
+if (!classId) {
+  return (
+    <div className={styles.panelWrap}>
+      <div className={styles.panelTitle}>Blurting Board</div>
+      <p className={styles.panelText}>
+        Select a course first to save blurting boards by class.
+      </p>
+    </div>
+  );
+}
   return (
     <div className={styles.panelWrap}>
       <div className={styles.panelTopRow}>

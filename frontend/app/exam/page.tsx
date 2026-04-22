@@ -6,12 +6,14 @@ import ExamRunner from "@/components/ExamRunner";
 
 export default function ExamPage() {
   return (
-    <div className="py-7 space-y-6">
+   <div className="app-shell py-7 space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold text-slate-900">Exam Mode</h1>
-        <p className="text-slate-500 mt-1">
-          Simulate real testing: time pressure, focus, and clean reasoning.
-        </p>
+       <h1 className="text-3xl font-semibold" style={{ color: "var(--text-main)" }}>
+  Exam Mode
+</h1>
+<p className="mt-1" style={{ color: "var(--text-soft)" }}>
+  Simulate real testing: time pressure, focus, and clean reasoning.
+</p>
       </div>
 
       <Card>

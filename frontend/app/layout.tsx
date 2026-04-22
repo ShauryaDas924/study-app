@@ -9,11 +9,10 @@ import Navbar from "@/components/Navbar";
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="bg-slate-50 text-slate-800 antialiased">
+      <body className="app-shell antialiased">
         <QueryClientProvider client={queryClient}>
           <div className="min-h-screen">
             <Navbar />
-
             <main className="mx-auto max-w-5xl px-6 py-10">
               {children}
             </main>

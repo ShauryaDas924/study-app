@@ -17,14 +17,14 @@ export default function DashboardPage() {
   const readiness = readinessQ.data?.readiness_percent ?? 0;
 
   return (
-    <div className="space-y-10">
+   <div className="app-shell space-y-10">
       <div>
-        <h1 className="text-3xl font-semibold text-slate-900">
-          Your Learning Progress
-        </h1>
-        <p className="text-slate-500 mt-2">
-          Small daily practice leads to long-term mastery.
-        </p>
+       <h1 className="text-3xl font-semibold" style={{ color: "var(--text-main)" }}>
+  Your Learning Progress
+</h1>
+<p className="mt-2" style={{ color: "var(--text-soft)" }}>
+  Small daily practice leads to long-term mastery.
+</p>
       </div>
 
       <Card>
@@ -33,13 +33,25 @@ export default function DashboardPage() {
           subtitle="How prepared you are for exams."
         />
 
-        <div className="text-5xl font-semibold text-emerald-600">
-          {readiness}%
-        </div>
+        <div
+  className="text-5xl font-semibold"
+  style={{
+    background: "var(--gradient-main)",
+    WebkitBackgroundClip: "text",
+    WebkitTextFillColor: "transparent",
+  }}
+>
+  {readiness}%
+</div>
       </Card>
         {classId && (
-  <Button
-    className="bg-red-500 hover:bg-red-600 text-white"
+ <Button
+  className="px-4 py-2 rounded-xl border"
+  style={{
+    background: "linear-gradient(135deg, #ffe3ea 0%, #fff2cf 100%)",
+    color: "#6b3d49",
+    borderColor: "var(--border-soft)",
+  }}
     onClick={async () => {
       const ok = confirm(
        "⚠️ This will DELETE all notes, concepts, and mastery for this course.\n\nType OK to continue."

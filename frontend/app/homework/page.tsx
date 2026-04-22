@@ -95,7 +95,7 @@ useEffect(() => {
   const text = formatTutorText(content);
 
   return (
-    <div className="prose prose-slate max-w-none leading-7 break-words">
+    <div className="prose prose-slate themed-markdown max-w-none leading-7 break-words">
       <ReactMarkdown
         remarkPlugins={[remarkMath]}
         rehypePlugins={[rehypeKatex]}
@@ -233,12 +233,12 @@ useEffect(() => {
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-100px)] overflow-hidden">
+   <div className="app-shell flex flex-col h-[calc(100vh-100px)] overflow-hidden">
       <h1 className="text-2xl font-semibold mb-4">Homework Helper</h1>
 
       {/* QUESTION PREVIEW */}
       {questions.length > 0 && (
-        <div className="border shadow-sm p-5 rounded-xl bg-green-50 max-w-3xl mb-4">
+        <div className="app-panel p-5 max-w-3xl mb-4">
           <div className="font-semibold text-green-800 mb-2">
             Question {qIndex + 1} / {questions.length}
           </div>
@@ -251,13 +251,22 @@ useEffect(() => {
       <div className="space-y-4 max-w-3xl overflow-y-auto flex-1 pr-2 min-h-0">
         {messages.map((m, i) => (
           <div key={i} className={m.role === "user" ? "text-right" : "text-left"}>
-            <div
-              className={
-                m.role === "user"
-                  ? "inline-block bg-green-200 p-3 rounded-lg max-w-xl whitespace-pre-wrap break-words text-left"
-                  : "inline-block bg-white border shadow-sm p-4 rounded-xl max-w-none text-left"
-              }
-            >
+           <div
+  className={
+    m.role === "user"
+      ? "inline-block max-w-xl whitespace-pre-wrap break-words text-left px-4 py-3 rounded-2xl border"
+      : "inline-block app-panel p-4 max-w-none text-left"
+  }
+  style={
+    m.role === "user"
+      ? {
+          background:
+            "linear-gradient(135deg, rgba(247,167,195,0.32), rgba(191,216,184,0.28))",
+          borderColor: "var(--border-soft)",
+        }
+      : undefined
+  }
+>
              {m.role === "assistant" ? (
   <AssistantMessage content={m.content} />
 ) : (
@@ -275,9 +284,9 @@ useEffect(() => {
       {loading && <div className="mt-2">Thinking...</div>}
 
       {/* INPUT BAR (BOTTOM) */}
-      <div className="border-t pt-3 mt-3 bg-white sticky bottom-0">
-        <textarea
-          className="w-full border shadow-sm p-3 rounded-lg"
+     <div className="pt-3 mt-3 sticky bottom-0">
+       <textarea
+  className="w-full app-input shadow-sm p-3 rounded-2xl"
           rows={3}
           placeholder="Ask something..."
           value={q}
@@ -289,7 +298,7 @@ useEffect(() => {
             onClick={() => {
               if (qIndex > 0) setQIndex(qIndex - 1);
             }}
-            className="bg-gray-500 text-white px-3 py-2 rounded"
+           className="app-button-secondary px-3 py-2"
           >
             Prev
           </button>
@@ -298,14 +307,14 @@ useEffect(() => {
             onClick={() => {
               if (qIndex < questions.length - 1) setQIndex(qIndex + 1);
             }}
-            className="bg-gray-500 text-white px-3 py-2 rounded"
+           className="app-button-secondary px-3 py-2"
           >
             Next
           </button>
 
           <button
             onClick={() => ask(questions[qIndex])}
-            className="bg-purple-600 text-white px-3 py-2 rounded"
+            className="app-button-primary px-3 py-2"
           >
             Solve This Question
           </button>
@@ -313,7 +322,7 @@ useEffect(() => {
           <button
             disabled={!classId || loading}
             onClick={() => ask()}
-            className="bg-green-500 text-white px-4 py-2 rounded"
+           className="app-button-primary px-4 py-2"
           >
             Ask
           </button>
@@ -321,7 +330,7 @@ useEffect(() => {
           <button
             disabled={loading}
             onClick={() => ask("hint")}
-            className="bg-yellow-500 text-white px-3 py-2 rounded"
+            className="app-button-secondary px-3 py-2"
           >
             Hint
           </button>
@@ -329,7 +338,7 @@ useEffect(() => {
           <button
             disabled={loading}
             onClick={() => ask("next step")}
-            className="bg-blue-500 text-white px-3 py-2 rounded"
+            className="app-button-secondary px-3 py-2"
           >
             Next Step
           </button>
@@ -339,14 +348,14 @@ useEffect(() => {
             onClick={() =>
               ask("analyze my work what did I do well and what are my pitfalls and mistakes")
             }
-            className="bg-indigo-600 text-white px-3 py-2 rounded"
+            className="app-button-primary px-3 py-2"
           >
             Analyze My Work
           </button>
 
           <input type="file" onChange={upload} />
 
-          <div className="border p-3 rounded bg-blue-50">
+          <div className="app-soft-panel p-3">
             <div className="text-sm font-semibold mb-1">
               Upload your work for feedback
             </div>

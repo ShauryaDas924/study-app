@@ -16,21 +16,24 @@ import {
   applyNodeChanges,
   useReactFlow,
 } from "@xyflow/react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import MindMapNode, { MindMapNodeData } from "./MindMapNode";
 import styles from "./BlurtingMindMap.module.css";
-
+import { useStore } from "@/store/useStore";
 type Tool = "select" | "rectangle" | "circle" | "text";
 
 type CustomNode = Node<MindMapNodeData>;
-
+type MindMapStorage = {
+  nodes: CustomNode[];
+  edges: Edge[];
+};
 const nodeTypes = {
   mindNode: MindMapNode,
 };
 
 function MindMapCanvas() {
   const reactFlow = useReactFlow<CustomNode, Edge>();
-
+const classId = useStore((s) => s.selectedClassId);
   const [tool, setTool] = useState<Tool>("select");
   const [nodes, setNodes] = useState<CustomNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
@@ -60,6 +63,38 @@ function MindMapCanvas() {
       })),
     []
   );
+useEffect(() => {
+  if (!classId) return;
+
+  const saved = localStorage.getItem(`mindmap_board_${classId}`);
+  if (!saved) return;
+
+  try {
+    const parsed: MindMapStorage = JSON.parse(saved);
+    const restoredNodes = attachCallbacks(parsed.nodes ?? []);
+    setNodes(restoredNodes);
+    setEdges(parsed.edges ?? []);
+  } catch (error) {
+    console.error("Failed to load mind map from localStorage", error);
+  }
+}, [classId, attachCallbacks]);
+
+useEffect(() => {
+  if (!classId) return;
+
+  const payload: MindMapStorage = {
+    nodes: nodes.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        onChangeLabel: undefined as never,
+      },
+    })),
+    edges,
+  };
+
+  localStorage.setItem(`mindmap_board_${classId}`, JSON.stringify(payload));
+}, [classId, nodes, edges]);
 
   const onNodesChange = useCallback((changes: NodeChange<CustomNode>[]) => {
     setNodes((current) => attachCallbacks(applyNodeChanges(changes, current)));
@@ -159,10 +194,14 @@ function MindMapCanvas() {
   }, [edges, nodes]);
 
   const clearCanvas = useCallback(() => {
-    setNodes([]);
-    setEdges([]);
-    setTool("select");
-  }, []);
+  setNodes([]);
+  setEdges([]);
+  setTool("select");
+
+  if (classId) {
+    localStorage.removeItem(`mindmap_board_${classId}`);
+  }
+}, [classId]);
 
   const helperText = useMemo(() => {
     if (tool === "rectangle") return "Click the canvas to place a rectangle node.";
@@ -170,7 +209,16 @@ function MindMapCanvas() {
     if (tool === "text") return "Click the canvas to place a text label node.";
     return "Select/move nodes, then drag handles to create connectors.";
   }, [tool]);
-
+if (!classId) {
+  return (
+    <div className={styles.panelWrap}>
+      <div className={styles.panelTitle}>Mind Map Board</div>
+      <p className={styles.panelText}>
+        Select a course first to save mind maps by class.
+      </p>
+    </div>
+  );
+}
   return (
     <div className={styles.panelWrap}>
       <div className={styles.panelTopRow}>

@@ -102,14 +102,14 @@ setLoading(false)
 
 return(
 
-<div className="max-w-4xl mx-auto space-y-6">
+<div className="app-shell max-w-4xl mx-auto space-y-6">
 
-<h1 className="text-2xl font-semibold">
-Exam Insights
+<h1 className="text-2xl font-semibold" style={{ color: "var(--text-main)" }}>
+  Exam Insights
 </h1>
 {exams.length > 0 && (
 
-<div className="border p-5 rounded-lg bg-white">
+<div className="app-panel p-5">
 
 <div className="font-semibold mb-3">
 Past Exam Analyses
@@ -120,8 +120,12 @@ Past Exam Analyses
 {exams.map((exam,i)=>(
 <button
 key={exam.id}
-className="block w-full text-left border rounded p-3 hover:bg-gray-50"
-onClick={()=>setAnalysis(exam.analysis)}
+className="block w-full text-left border rounded-2xl p-3 transition"
+style={{
+  background: "rgba(255,255,255,0.74)",
+  borderColor: "var(--border-soft)",
+  color: "var(--text-main)",
+}}
 >
 Exam {i+1} — {new Date(exam.created_at).toLocaleDateString()}
 </button>
@@ -132,7 +136,7 @@ Exam {i+1} — {new Date(exam.created_at).toLocaleDateString()}
 </div>
 
 )}
-<div className="border p-5 rounded-lg bg-gray-50">
+<div className="app-soft-panel p-5">
 
 <div className="font-semibold mb-2">
 Upload graded exam or assignment
@@ -140,7 +144,7 @@ Upload graded exam or assignment
 
 <input type="file" onChange={upload}/>
 
-<p className="text-sm text-gray-500 mt-2">
+<p className="text-sm mt-2" style={{ color: "var(--text-soft)" }}>
 Upload past exams or homework with grades and corrections.
 The AI will analyze your mistakes and show how to improve.
 </p>
@@ -149,23 +153,30 @@ The AI will analyze your mistakes and show how to improve.
 
 {loading && (
 
-<div className="text-blue-600">
-Analyzing your exam...
+<div style={{ color: "var(--accent-pink-strong)" }}>
+  Analyzing your exam...
 </div>
 
 )}
 
 {error && (
 
-<div className="text-red-600 border p-4 rounded">
-{error}
+<div
+  className="p-4 rounded-2xl border"
+  style={{
+    color: "#7b4250",
+    background: "linear-gradient(135deg, #ffe8ee 0%, #fff4d8 100%)",
+    borderColor: "var(--border-soft)",
+  }}
+>
+  {error}
 </div>
 
 )}
 
 {analysis && (
 
-<div className="border p-6 rounded-xl bg-white shadow-sm prose max-w-none break-words">
+<div className="app-panel p-6 prose themed-markdown max-w-none break-words">
 
 <ReactMarkdown
 remarkPlugins={[remarkMath]}

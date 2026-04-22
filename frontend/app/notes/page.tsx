@@ -157,12 +157,14 @@ useEffect(() => {
      UI
   =============================== */
   return (
-    <div className="py-7 space-y-6">
+   <div className="app-shell py-7 space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold text-slate-900">Notes</h1>
-        <p className="text-slate-500 mt-1">
-          Write clean notes. Extract concepts. Generate grounded practice.
-        </p>
+       <h1 className="text-3xl font-semibold" style={{ color: "var(--text-main)" }}>
+  Notes
+</h1>
+<p className="mt-1" style={{ color: "var(--text-soft)" }}>
+  Write clean notes. Extract concepts. Generate grounded practice.
+</p>
       </div>
 
       {/* ================= CREATE NOTE ================= */}
@@ -212,40 +214,52 @@ useEffect(() => {
           {/* ================= FLASHCARDS ================= */}
           {allFlashcards.length > 0 && (
             <div className="mt-6">
-              <div className="font-semibold text-lg mb-4">
-                📚 Flashcards
-              </div>
+              <div className="font-semibold text-lg mb-4" style={{ color: "var(--text-main)" }}>
+  📚 Flashcards
+</div>
 
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
                 {allFlashcards.map((c: any, i: number) => (
-                  <div
-                    key={i}
-                    className="
-                      p-6 rounded-2xl 
-                      bg-gradient-to-br from-white to-slate-50
-                      border border-slate-200
-                      shadow-sm hover:shadow-xl
-                      transition
-                    "
-                  >
-                    <div className="text-xs uppercase text-blue-500 font-semibold">
-                      Question
-                    </div>
+                <div
+  key={i}
+  className="p-6 rounded-2xl border transition"
+  style={{
+    background:
+      "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(255,247,251,0.96) 52%, rgba(248,255,247,0.96) 100%)",
+    borderColor: "var(--border-soft)",
+    boxShadow: "var(--shadow-card)",
+  }}
+>
+  <div
+    className="text-xs uppercase font-semibold"
+    style={{ color: "var(--accent-pink-strong)" }}
+  >
+    Question
+  </div>
 
-                    <div className="mt-2 font-medium text-slate-900">
-                      {c.question}
-                    </div>
+  <div className="mt-2 font-medium" style={{ color: "var(--text-main)" }}>
+    {c.question}
+  </div>
 
-                    <div className="h-px bg-slate-200 my-4" />
+  <div
+    className="h-px my-4"
+    style={{
+      background:
+        "linear-gradient(90deg, rgba(247,167,195,0.55), rgba(246,223,139,0.55), rgba(191,216,184,0.55))",
+    }}
+  />
 
-                    <div className="text-xs uppercase text-green-600 font-semibold">
-                      Answer
-                    </div>
+  <div
+    className="text-xs uppercase font-semibold"
+    style={{ color: "var(--accent-green-strong)" }}
+  >
+    Answer
+  </div>
 
-                    <div className="mt-2 text-sm text-slate-700">
-                      {c.answer}
-                    </div>
-                  </div>
+  <div className="mt-2 text-sm" style={{ color: "var(--text-soft)" }}>
+    {c.answer}
+  </div>
+</div>
                 ))}
               </div>
             </div>
@@ -264,18 +278,29 @@ useEffect(() => {
           <div className="space-y-2">
             {(notesQ.data || []).map((n) => (
               <button
-                key={n.id}
-                className={[
-                  "w-full text-left rounded-xl border p-3",
-                  selected === n.id
-                    ? "border-green-200 bg-green-50"
-                    : "border-slate-100 hover:bg-slate-50",
-                ].join(" ")}
-                onClick={() => setSelectedNoteId(n.id)}
-              >
-                <div className="font-medium">{n.title}</div>
-                <div className="text-xs text-slate-500">{n.id}</div>
-              </button>
+  key={n.id}
+  className="w-full text-left rounded-2xl border p-3 transition"
+  style={
+    selected === n.id
+      ? {
+          background: "var(--gradient-main)",
+          borderColor: "var(--border-soft)",
+          color: "var(--text-main)",
+          boxShadow: "var(--shadow-button)",
+        }
+      : {
+          background: "rgba(255,255,255,0.72)",
+          borderColor: "var(--border-soft)",
+          color: "var(--text-main)",
+        }
+  }
+  onClick={() => setSelectedNoteId(n.id)}
+>
+  <div className="font-medium">{n.title}</div>
+  <div className="text-xs" style={{ color: "var(--text-soft)" }}>
+    {n.id}
+  </div>
+</button>
             ))}
           </div>
         </Card>
@@ -295,49 +320,60 @@ useEffect(() => {
           <div>Loading…</div>
         ) : (
           <>
-            <pre className="text-sm bg-slate-50 rounded-xl p-4 whitespace-pre-wrap">
-              {(noteQ.data?.content_json as any)?.text}
-            </pre>
+            <pre
+  className="text-sm rounded-2xl p-4 whitespace-pre-wrap border"
+  style={{
+    background: "rgba(255,255,255,0.75)",
+    borderColor: "var(--border-soft)",
+    color: "var(--text-main)",
+  }}
+>
+  {(noteQ.data?.content_json as any)?.text}
+</pre>
 
             <div className="mt-4 space-y-2">
               <div className="flex items-center justify-between text-sm">
-                <div className="font-medium text-slate-700">
+                <div className="font-medium" style={{ color: "var(--text-soft)" }}>
   Extraction Status: {extractionStatus} — {extractionStage}
 </div>
-                <div className="text-slate-500">{extractionProgress}%</div>
+<div style={{ color: "var(--text-soft)" }}>{extractionProgress}%</div>
               </div>
 
-              <div className="w-full h-3 bg-slate-200 rounded-full overflow-hidden">
-                <div
-                  className={[
-                    "h-full transition-all duration-500",
-                    extractionStatus === "failed"
-                      ? "bg-red-500"
-                      : extractionStatus === "completed"
-                      ? "bg-green-500"
-                      : "bg-blue-500",
-                  ].join(" ")}
-                  style={{ width: `${extractionProgress}%` }}
-                />
-              </div>
+              <div
+  className="w-full h-3 rounded-full overflow-hidden"
+  style={{ background: "rgba(231, 218, 203, 0.7)" }}
+>
+  <div
+    className="h-full transition-all duration-500"
+    style={{
+      width: `${extractionProgress}%`,
+      background:
+        extractionStatus === "failed"
+          ? "linear-gradient(135deg, #ffd7df 0%, #ffb8c8 100%)"
+          : extractionStatus === "completed"
+          ? "linear-gradient(135deg, #bfd8b8 0%, #f6df8b 100%)"
+          : "linear-gradient(135deg, #f7a7c3 0%, #f6df8b 52%, #bfd8b8 100%)",
+    }}
+  />
+</div>
 
               {(extractionStatus === "queued" ||
                 extractionStatus === "running") && (
-                <div className="text-xs text-slate-500">
-                  Extraction is running in the background. You can leave this page.
-                </div>
+                <div className="text-xs" style={{ color: "var(--text-soft)" }}>
+  Extraction is running in the background. You can leave this page.
+</div>
               )}
 
               {extractionStatus === "completed" && (
-                <div className="text-xs text-green-600">
-                  Extraction completed.
-                </div>
+                <div className="text-xs" style={{ color: "var(--accent-green-strong)" }}>
+  Extraction completed.
+</div>
               )}
 
               {extractionStatus === "failed" && extractionError && (
-                <div className="text-xs text-red-600">
-                  Extraction failed: {String(extractionError)}
-                </div>
+                <div className="text-xs" style={{ color: "var(--accent-pink-strong)" }}>
+  Extraction failed: {String(extractionError)}
+</div>
               )}
             </div>
           </>
@@ -356,12 +392,22 @@ useEffect(() => {
         ) : (
           <div className="space-y-3">
             {concepts.map((c: any) => (
-              <div key={c.id} className="p-4 border rounded-xl shadow-sm">
-                <div className="font-medium">{c.name}</div>
-                <div className="text-sm text-slate-600">
-                  {c.description}
-                </div>
-              </div>
+              <div
+  key={c.id}
+  className="p-4 rounded-2xl border"
+  style={{
+    background: "rgba(255,255,255,0.74)",
+    borderColor: "var(--border-soft)",
+    boxShadow: "var(--shadow-soft)",
+  }}
+>
+  <div className="font-medium" style={{ color: "var(--text-main)" }}>
+    {c.name}
+  </div>
+  <div className="text-sm" style={{ color: "var(--text-soft)" }}>
+    {c.description}
+  </div>
+</div>
             ))}
           </div>
         )}

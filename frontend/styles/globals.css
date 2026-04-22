@@ -3,3 +3,161 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --bg-app: #fffaf8;
+  --bg-app-soft: #fffdf8;
+  --bg-panel: rgba(255, 255, 255, 0.82);
+  --bg-panel-strong: #fffefb;
+
+  --text-main: #2f2a2f;
+  --text-soft: #5f5960;
+  --text-muted: #7b7480;
+
+  --border-soft: #e7dacb;
+  --border-medium: #dbcdbc;
+
+  --accent-pink: #f7a7c3;
+  --accent-pink-strong: #ef8fb7;
+  --accent-green: #bfd8b8;
+  --accent-green-strong: #9fc49c;
+  --accent-yellow: #f6df8b;
+  --accent-yellow-strong: #f0cd59;
+
+  --gradient-main: linear-gradient(135deg, #f7a7c3 0%, #f6df8b 52%, #bfd8b8 100%);
+  --gradient-soft: linear-gradient(180deg, #fffdf8 0%, #fff9fc 48%, #fbfff9 100%);
+  --gradient-card: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.94) 0%,
+    rgba(255, 250, 252, 0.94) 52%,
+    rgba(249, 255, 248, 0.94) 100%
+  );
+  --gradient-button: linear-gradient(135deg, #f7a7c3 0%, #f2d56d 100%);
+  --gradient-button-soft: linear-gradient(135deg, #eef7ec 0%, #fff7df 100%);
+
+  --shadow-soft: 0 10px 30px rgba(208, 190, 170, 0.14);
+  --shadow-card: 0 14px 34px rgba(206, 188, 170, 0.16);
+  --shadow-button: 0 10px 24px rgba(226, 191, 120, 0.24);
+
+  --radius-xl: 24px;
+  --radius-lg: 18px;
+  --radius-md: 14px;
+}
+
+html,
+body {
+  background:
+    radial-gradient(circle at top left, rgba(247, 167, 195, 0.1), transparent 26%),
+    radial-gradient(circle at 85% 10%, rgba(191, 216, 184, 0.16), transparent 22%),
+    radial-gradient(circle at 65% 88%, rgba(246, 223, 139, 0.12), transparent 24%),
+    var(--gradient-soft);
+  color: var(--text-main);
+}
+
+body {
+  min-height: 100vh;
+}
+
+* {
+  border-color: var(--border-soft);
+}
+
+::selection {
+  background: rgba(247, 167, 195, 0.28);
+  color: var(--text-main);
+}
+
+.app-shell {
+  background: transparent;
+  color: var(--text-main);
+}
+
+.app-panel {
+  background: var(--gradient-card);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(10px);
+}
+
+.app-soft-panel {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(10px);
+}
+
+.app-gradient-pill {
+  background: var(--gradient-main);
+  color: var(--text-main);
+  border: 1px solid rgba(229, 216, 196, 0.9);
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.app-button-primary {
+  background: var(--gradient-button);
+  color: var(--text-main);
+  border: 1px solid rgba(228, 213, 192, 0.9);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-button);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+}
+
+.app-button-primary:hover {
+  transform: translateY(-1px);
+}
+
+.app-button-secondary {
+  background: var(--gradient-button-soft);
+  color: var(--text-main);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+}
+
+.app-button-secondary:hover {
+  transform: translateY(-1px);
+}
+
+.app-input {
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--text-main);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+}
+
+.app-input:focus {
+  outline: none;
+  border-color: var(--accent-pink);
+  box-shadow: 0 0 0 4px rgba(247, 167, 195, 0.16);
+}
+
+.app-muted-text {
+  color: var(--text-soft);
+}
+
+.themed-markdown pre {
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid var(--border-soft);
+  border-radius: 16px;
+}
+
+.themed-markdown code {
+  border-radius: 8px;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #f7a7c3, #f6df8b, #bfd8b8);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.45);
+}

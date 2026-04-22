@@ -27,8 +27,10 @@ export default function ClassesPage() {
   });
 
   return (
-    <div className="space-y-6">
-     <h1 className="text-2xl font-semibold">Your Courses</h1>
+   <div className="app-shell space-y-6">
+     <h1 className="text-2xl font-semibold" style={{ color: "var(--text-main)" }}>
+  Your Courses
+</h1>
 
       {/* CREATE */}
       <div className="flex gap-3">
@@ -36,11 +38,11 @@ export default function ClassesPage() {
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Course name (e.g. Calculus II)"
-          className="border rounded-xl px-4 py-2 w-64"
+          className="app-input px-4 py-2 w-64"
         />
         <button
           onClick={() => createM.mutate({ name })}
-          className="bg-green-500 text-white px-4 py-2 rounded-xl"
+         className="app-button-primary px-4 py-2"
         >
           Create
         </button>
@@ -52,11 +54,21 @@ export default function ClassesPage() {
           <div
             key={c.id}
             onClick={() => setClass(c.id)}
-            className={`p-4 rounded-xl border cursor-pointer ${
-              selected === c.id
-                ? "bg-green-100 border-green-400"
-                : "bg-white"
-            }`}
+            className="p-4 rounded-2xl border cursor-pointer transition"
+style={
+  selected === c.id
+    ? {
+        background: "var(--gradient-main)",
+        borderColor: "var(--border-soft)",
+        color: "var(--text-main)",
+        boxShadow: "var(--shadow-button)",
+      }
+    : {
+        background: "var(--gradient-card)",
+        borderColor: "var(--border-soft)",
+        color: "var(--text-main)",
+      }
+}
           >
             {c.name}
           </div>

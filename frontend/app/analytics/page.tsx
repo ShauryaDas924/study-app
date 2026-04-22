@@ -20,8 +20,10 @@ export default function AnalyticsPage() {
   return (
     <div className="py-7 space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold text-slate-900">Analytics</h1>
-        <p className="text-slate-500 mt-1">
+        <h1 className="text-3xl font-semibold" style={{ color: "var(--text-main)" }}>
+  Analytics
+</h1>
+<p className="mt-1" style={{ color: "var(--text-soft)" }}>
           Misconceptions repeat across concepts. Track patterns, then fix root causes.
         </p>
       </div>
@@ -37,11 +39,14 @@ export default function AnalyticsPage() {
           }
         />
         {depsM.data ? (
-          <div className="text-sm text-slate-700 mb-3">
-            Created edges: <b>{depsM.data.edges_created}</b>
+<div className="text-sm mb-3" style={{ color: "var(--text-soft)" }}>            Created edges: <b>{depsM.data.edges_created}</b>
           </div>
         ) : null}
-        {depsM.error ? <div className="text-sm text-pink-600">{String(depsM.error)}</div> : null}
+       {depsM.error ? (
+  <div className="text-sm" style={{ color: "var(--accent-pink-strong)" }}>
+    {String(depsM.error)}
+  </div>
+) : null}
         <KnowledgeGraph />
       </Card>
 
