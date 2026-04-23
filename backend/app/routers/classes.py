@@ -23,6 +23,10 @@ from app.models import (
     Question,
     TutorMemory,
     ConceptDependency,
+    ChatMemory,
+    StudentPitfall,
+    WorkReviewSession,
+    StepReview,
 )
 router = APIRouter(prefix="/classes", tags=["classes"])
 
@@ -130,7 +134,47 @@ async def clear_class_data(
             TutorMemory.concept_id.in_(concept_ids)
         )
     )
+    
+    # -----------------------------
+    # 7.5 Delete ChatMemory
+    # -----------------------------
+    await db.execute(
+        delete(ChatMemory).where(
+            ChatMemory.user_id == user_id,
+            ChatMemory.class_id == class_id
+        )
+    )
 
+    # -----------------------------
+    # 7.6 Delete Student Pitfalls
+    # -----------------------------
+    await db.execute(
+        delete(StudentPitfall).where(
+            StudentPitfall.user_id == user_id,
+            StudentPitfall.class_id == class_id
+        )
+    )
+
+    # -----------------------------
+    # 7.7 Delete Step Reviews
+    #-----------------------------
+    await db.execute(
+        delete(StepReview).where(
+            StepReview.user_id == user_id,
+            StepReview.class_id == class_id
+        )
+    )
+
+    # -----------------------------
+    # 7.8 Delete Work Review Sessions
+    # -----------------------------
+    await db.execute(
+        delete(WorkReviewSession).where(
+            WorkReviewSession.user_id == user_id,
+            WorkReviewSession.class_id == class_id
+        )
+    )
+    
     # -----------------------------
     # 8. Delete Concept Dependencies
     # -----------------------------

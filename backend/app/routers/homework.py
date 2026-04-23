@@ -8,7 +8,15 @@ import json
 import time
 import base64
 from sqlalchemy.dialects.postgresql import insert
-from app.models import Concept, ChatMemory, StudentPitfall, Mastery
+from app.models import (
+    Concept,
+    ChatMemory,
+    StudentPitfall,
+    Mastery,
+    WorkReviewSession,
+    StepReview,
+)
+
 from app.db import get_db
 from app.services.llm import client, kimi_client, top_k_concepts
 from app.services.file_extraction import extract_text
@@ -22,6 +30,25 @@ class HWIn(BaseModel):
     class_id: str
     question: str
 
+class StepCheckIn(BaseModel):
+    class_id: str
+    session_id: str
+    user_prompt: str
+    selected_step: str | None = None
+    selected_region: dict | None = None
+    action: str = "check_this_step"
+    # check_this_step | help_me_continue | what_did_i_do_right | what_to_watch_next_time
+    
+class StepCheckOut(BaseModel):
+    step_verdict: str | None = None
+    concept_name: str | None = None
+    correct_parts: list[str] = []
+    issues: list[str] = []
+    next_step: str | None = None
+    next_time_rule: str | None = None
+    pitfall_tag: str | None = None
+    confidence: float | None = None
+    response_markdown: str
 
 def clean_extracted_text(text: str) -> str:
     """
@@ -134,7 +161,15 @@ def split_homework_questions(text: str) -> list[str]:
             questions = fallback_questions
 
     return questions
-
+    
+def safe_json_loads(raw: str):
+    if not raw:
+        return None
+    cleaned = raw.replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        return None
 
 # ----------------------
 # TEXT QUESTION
@@ -1085,6 +1120,84 @@ async def clear_chat(
     return {"status": "cleared"}
 
 
+@router.post("/review-work-session")
+async def create_review_work_session(
+    class_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+    if not class_id:
+        raise HTTPException(400, "class_id required")
+
+    try:
+        class_uuid = UUID(class_id)
+    except:
+        raise HTTPException(400, "Invalid class_id")
+
+    content = await file.read()
+
+    extracted_text = ""
+    try:
+        extracted_text = await extract_text(file.filename, content)
+        extracted_text = clean_extracted_text(extracted_text)
+    except Exception:
+        extracted_text = ""
+
+    img_b64 = base64.b64encode(content).decode()
+    source_type = "pdf" if (file.filename or "").lower().endswith(".pdf") else "image"
+    session = WorkReviewSession(
+        user_id=current_user_id,
+        class_id=class_uuid,
+        filename=file.filename,
+        extracted_text=extracted_text,
+        image_base64=img_b64,
+        source_type=source_type
+    )
+
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+
+    return {
+        "session_id": str(session.id),
+        "filename": file.filename,
+        "extracted_text": extracted_text[:4000]
+    }
+
+@router.get("/review-work-sessions/{class_id}")
+async def get_review_work_sessions(
+    class_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+    try:
+        class_uuid = UUID(class_id)
+    except:
+        raise HTTPException(400, "Invalid class_id")
+
+    res = await db.execute(
+        select(WorkReviewSession)
+        .where(
+            WorkReviewSession.user_id == current_user_id,
+            WorkReviewSession.class_id == class_uuid
+        )
+        .order_by(WorkReviewSession.created_at.desc())
+        .limit(20)
+    )
+
+    rows = res.scalars().all()
+
+    return [
+        {
+            "id": str(r.id),
+            "filename": r.filename,
+            "source_type": r.source_type,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
 # ----------------------
 # REVIEW STUDENT WORK (VISION)
 # ----------------------
@@ -1216,6 +1329,15 @@ IMPORTANT RULES
 • Guide the student toward the next correct step
 • Encourage correct reasoning when it appears
 
+• If the student’s work is mostly correct, preserve their path rather than replacing it
+• If the visible error starts earlier than the current line, name where the real break begins
+• Distinguish between:
+  - correct
+  - correct but incomplete
+  - right concept, wrong execution
+  - wrong concept
+  - arithmetic/algebra slip
+  
 If the student is on the right path, clearly say so.
 
 ------------------------------------------------
@@ -1308,7 +1430,296 @@ Equations: $$...$$
         "review": resp.choices[0].message.content
     }
 
+@router.post("/step-check")
+async def step_check(
+    body: StepCheckIn,
+    db: AsyncSession = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+    if not body.class_id:
+        raise HTTPException(400, "class_id required")
 
+    try:
+        class_uuid = UUID(body.class_id)
+        session_uuid = UUID(body.session_id)
+    except:
+        raise HTTPException(400, "Invalid class_id or session_id")
+
+    session = await db.get(WorkReviewSession, session_uuid)
+    if not session or str(session.user_id) != str(current_user_id):
+        raise HTTPException(404, "Review session not found")
+
+    # -------- LOAD CLASS CONCEPTS --------
+    res = await db.execute(
+        select(Concept).where(
+            Concept.class_id == class_uuid,
+            Concept.user_id == current_user_id
+        )
+    )
+    concepts = res.scalars().all()
+
+    retrieval_query = f"""
+    Student uploaded work.
+    User prompt: {body.user_prompt}
+    Selected step: {body.selected_step or ""}
+    Action: {body.action}
+    """
+
+    scored_concepts = await top_k_concepts(retrieval_query, concepts, k=4)
+    top_concepts = [c for score, c in scored_concepts]
+
+    context = "\n\n".join([
+        f"""
+CONCEPT KNOWLEDGE
+Name: {c.name}
+Definition: {c.definition or c.description}
+When to use: {c.when_to_use or "Apply when this concept appears in relevant problems."}
+Common pitfall: {c.pitfalls or "Students often misapply this concept."}
+"""
+        for c in top_concepts
+    ])[:2500]
+
+    structured_resp = kimi_client.chat.completions.create(
+        model="kimi-k2.5",
+        messages=[
+            {
+                "role": "system",
+                "content": f"""
+You are a step-based remediation tutor.
+
+You are reviewing a student's uploaded work and helping at a specific step.
+
+Relevant concepts:
+{context}
+
+Return JSON only.
+
+Schema:
+{{
+  "step_verdict": "correct|correct_but_incomplete|reasonable_idea_wrong_execution|wrong_concept|algebra_slip|timing_error|unit_error|unsupported_jump",
+  "concept_name": "string or null",
+  "correct_parts": ["..."],
+  "issues": ["..."],
+  "error_type": "short_snake_case or null",
+  "root_cause_step": "string or null",
+  "next_step": "one clear next move only",
+  "next_time_rule": "reusable rule for future problems",
+  "pitfall_tag": "short_snake_case or null",
+  "confidence": 0.0
+}}
+
+Rules:
+- Preserve correct student reasoning when possible
+- Do NOT fully solve unless absolutely necessary
+- Focus locally on the selected step
+- Distinguish the visible error from the root cause
+- If the selected step is correct, explicitly say it is correct
+- If the selected step is partly right, repair it instead of replacing it
+- Prefer one verdict only from this allowed set:
+  correct
+  correct_but_incomplete
+  reasonable_idea_wrong_execution
+  wrong_concept
+  algebra_slip
+  timing_error
+  unit_error
+  unsupported_jump
+- If uncertain, choose the closest verdict and lower confidence
+"""
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"""
+Student prompt: {body.user_prompt}
+Selected step: {body.selected_step or ""}
+Requested action: {body.action}
+
+Extracted text from upload:
+{session.extracted_text[:5000]}
+"""
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{session.image_base64}"
+                        }
+                    }
+                ]
+            }
+        ],
+        temperature=0.2,
+    )
+
+    raw_structured = structured_resp.choices[0].message.content
+    parsed = safe_json_loads(raw_structured)
+
+    if not parsed:
+        parsed = {
+            "step_verdict": None,
+            "concept_name": None,
+            "correct_parts": [],
+            "issues": ["Could not parse structured step review."],
+            "error_type": None,
+            "root_cause_step": None,
+            "next_step": "Re-state the selected step and ask the model to review that exact step.",
+            "next_time_rule": None,
+            "pitfall_tag": None,
+            "confidence": 0.2,
+        }
+
+    natural_resp = kimi_client.chat.completions.create(
+        model="kimi-k2.5",
+        messages=[
+            {
+                "role": "system",
+                "content": """
+You are a natural tutor.
+
+Turn the structured step review into clean markdown with these sections:
+
+## What You Did Right
+## What’s Off Here
+## Is This Step Valid?
+## Next Step
+## Next-Time Rule
+
+Rules:
+- sound like a real tutor
+- do not mention JSON
+- do not mention tags
+- do not dump a full solution
+- be specific to the student's current step
+"""
+            },
+            {
+                "role": "user",
+                "content": f"""
+Student prompt: {body.user_prompt}
+Selected step: {body.selected_step or ""}
+
+Structured review:
+{json.dumps(parsed, indent=2)}
+"""
+            }
+        ],
+        temperature=0.3,
+    )
+
+    response_markdown = natural_resp.choices[0].message.content
+
+    review_row = StepReview(
+        user_id=current_user_id,
+        class_id=class_uuid,
+        session_id=session_uuid,
+        user_prompt=body.user_prompt,
+        selected_step=body.selected_step,
+        selected_region=body.selected_region,
+        concept_name=parsed.get("concept_name"),
+        step_verdict=parsed.get("step_verdict"),
+        error_type=parsed.get("error_type"),
+        root_cause_step=parsed.get("root_cause_step"),
+        correct_parts=parsed.get("correct_parts", []),
+        issues=parsed.get("issues", []),
+        next_step=parsed.get("next_step"),
+        next_time_rule=parsed.get("next_time_rule"),
+        pitfall_tag=parsed.get("pitfall_tag"),
+        confidence=parsed.get("confidence"),
+        raw_feedback=response_markdown,
+    )
+    db.add(review_row)
+
+    pitfall_tag = parsed.get("pitfall_tag")
+    if pitfall_tag:
+        stmt = insert(StudentPitfall).values(
+            user_id=current_user_id,
+            class_id=class_uuid,
+            pitfall=pitfall_tag,
+            explanation=parsed.get("next_time_rule")
+        ).on_conflict_do_update(
+            index_elements=["user_id", "class_id", "pitfall"],
+            set_={"explanation": parsed.get("next_time_rule")}
+        )
+        await db.execute(stmt)
+
+    db.add(ChatMemory(
+        user_id=current_user_id,
+        class_id=class_uuid,
+        role="user",
+        content=f"[STEP CHECK] {body.user_prompt} | selected_step={body.selected_step or ''}"
+    ))
+
+    db.add(ChatMemory(
+        user_id=current_user_id,
+        class_id=class_uuid,
+        role="assistant",
+        content=response_markdown
+    ))
+
+    await db.commit()
+
+    return {
+        "step_verdict": parsed.get("step_verdict"),
+        "concept_name": parsed.get("concept_name"),
+        "correct_parts": parsed.get("correct_parts", []),
+        "issues": parsed.get("issues", []),
+        "next_step": parsed.get("next_step"),
+        "next_time_rule": parsed.get("next_time_rule"),
+        "pitfall_tag": parsed.get("pitfall_tag"),
+        "confidence": parsed.get("confidence"),
+        "response_markdown": response_markdown
+    }
+  
+@router.get("/step-review-history/{session_id}")
+async def get_step_review_history(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+    try:
+        session_uuid = UUID(session_id)
+    except:
+        raise HTTPException(400, "Invalid session_id")
+
+    session = await db.get(WorkReviewSession, session_uuid)
+    if not session or str(session.user_id) != str(current_user_id):
+        raise HTTPException(404, "Review session not found")
+
+    res = await db.execute(
+        select(StepReview)
+        .where(
+            StepReview.session_id == session_uuid,
+            StepReview.user_id == current_user_id
+        )
+        .order_by(StepReview.created_at.asc())
+    )
+
+    rows = res.scalars().all()
+
+    return [
+        {
+            "id": str(r.id),
+            "user_prompt": r.user_prompt,
+            "selected_step": r.selected_step,
+            "concept_name": r.concept_name,
+            "step_verdict": r.step_verdict,
+            "error_type": r.error_type,
+            "root_cause_step": r.root_cause_step,
+            "correct_parts": r.correct_parts or [],
+            "issues": r.issues or [],
+            "next_step": r.next_step,
+            "next_time_rule": r.next_time_rule,
+            "pitfall_tag": r.pitfall_tag,
+            "confidence": r.confidence,
+            "raw_feedback": r.raw_feedback,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+  
+  
 # ----------------------
 # GET STORED PITFALLS
 # ----------------------

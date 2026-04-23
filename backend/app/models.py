@@ -183,6 +183,55 @@ class StudentPitfall(Base):
     explanation = Column(Text, nullable=True)     # explanation text
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    
+    
+class WorkReviewSession(Base):
+    __tablename__ = "work_review_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    class_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+
+    filename = Column(Text, nullable=True)
+    extracted_text = Column(Text, nullable=True)
+    image_base64 = Column(Text, nullable=True)   # MVP storage, can move later
+    source_type = Column(Text, nullable=False, server_default=text("'image'"))  # image | pdf | text
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    
+class StepReview(Base):
+    __tablename__ = "step_reviews"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    class_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("work_review_sessions.id"), nullable=False, index=True)
+
+    user_prompt = Column(Text, nullable=True)          # "I'm confused at step 3"
+    selected_step = Column(Text, nullable=True)        # raw text or user step description
+    selected_region = Column(JSONB, nullable=True)     # future: x/y/width/height if you add selection box
+
+    concept_name = Column(Text, nullable=True)
+    step_verdict = Column(Text, nullable=True)         # correct | correct_but_incomplete | wrong_concept | algebra_slip | etc.
+    error_type = Column(Text, nullable=True)
+    root_cause_step = Column(Text, nullable=True)
+
+    correct_parts = Column(JSONB, nullable=True)
+    issues = Column(JSONB, nullable=True)
+
+    next_step = Column(Text, nullable=True)
+    next_time_rule = Column(Text, nullable=True)
+    pitfall_tag = Column(Text, nullable=True)
+
+    confidence = Column(Float, nullable=True)
+    raw_feedback = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
 # ----------------------
 # MASTERY
 # ----------------------
