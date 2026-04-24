@@ -1223,7 +1223,7 @@ async def review_student_work(
     )
 
     concepts = res.scalars().all()
-
+    mime_type = "application/pdf" if (file.filename or "").lower().endswith(".pdf") else "image/png"
     # -------- RETRIEVE RELEVANT CONCEPTS --------
     query = "student handwritten math solution"
 
@@ -1418,7 +1418,7 @@ Equations: $$...$$
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/png;base64,{img_b64}"
+                            "url": f"data:{mime_type};base64,{img_b64}"
                         }
                     }
                 ]
@@ -1457,7 +1457,7 @@ async def step_check(
         )
     )
     concepts = res.scalars().all()
-
+    mime_type = "application/pdf" if session.source_type == "pdf" else "image/png"
     retrieval_query = f"""
     Student uploaded work.
     User prompt: {body.user_prompt}
@@ -1544,7 +1544,7 @@ Extracted text from upload:
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/png;base64,{session.image_base64}"
+                            "url": f"data:{mime_type};base64,{session.image_base64}"
                         }
                     }
                 ]

@@ -101,7 +101,7 @@ export default function FlashcardsPage() {
 
   const lastLoadedNoteId = useRef<string | undefined>(undefined);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-
+const skipNextSaveRef = useRef(false);
   const sessionKey = useMemo(() => {
     return noteId ? `flashcards_session_${noteId}` : "";
   }, [noteId]);
@@ -134,39 +134,44 @@ export default function FlashcardsPage() {
     };
   }, [classId, noteId, setSelectedNoteId]);
 
-  useEffect(() => {
-    if (!noteId) return;
-    if (!cards.length) return;
-    if (loadedDeckNoteId !== noteId) return;
-    if (isRestoringSession) return;
+ useEffect(() => {
+  if (!noteId) return;
+  if (!cards.length) return;
+  if (loadedDeckNoteId !== noteId) return;
+  if (isRestoringSession) return;
 
-    const payload = {
-      index: i,
-      mode,
-      deck_ids: cards.map((c) => c.id),
-      all_deck_ids: allCards.map((c) => c.id),
-      hard_ids: hardPile.map((c) => c.id),
-      medium_ids: mediumPile.map((c) => c.id),
-    };
+  if (skipNextSaveRef.current) {
+    skipNextSaveRef.current = false;
+    return;
+  }
 
-    fetch(`http://localhost:8000/notes/flashcards/session/${noteId}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }).catch((e) => {
-      console.error("Failed to save backend session", e);
-    });
-  }, [
-    noteId,
-    loadedDeckNoteId,
-    isRestoringSession,
-    i,
+  const payload = {
+    index: i,
     mode,
-    cards,
-    allCards,
-    hardPile,
-    mediumPile,
-  ]);
+    deck_ids: cards.map((c) => c.id),
+    all_deck_ids: allCards.map((c) => c.id),
+    hard_ids: hardPile.map((c) => c.id),
+    medium_ids: mediumPile.map((c) => c.id),
+  };
+
+  fetch(`http://localhost:8000/notes/flashcards/session/${noteId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).catch((e) => {
+    console.error("Failed to save backend session", e);
+  });
+}, [
+  noteId,
+  loadedDeckNoteId,
+  isRestoringSession,
+  i,
+  mode,
+  cards,
+  allCards,
+  hardPile,
+  mediumPile,
+]);
 
   useEffect(() => {
     if (!classId || !noteId) return;
@@ -372,33 +377,81 @@ export default function FlashcardsPage() {
     setI(0);
   }
 
-  function returnToNormalMode() {
-    setMode("normal");
-    setCards(shuffle(allCards));
-    setI(0);
-    setShow(false);
-    setStreak(0);
-    setLives(3);
-    setSpeedScore(0);
+ function returnToNormalMode() {
+  if (timerRef.current) {
+    clearInterval(timerRef.current);
+    timerRef.current = null;
   }
+
+  setMode("normal");
+  setCards(shuffle(allCards.length ? allCards : cards));
+  setI(0);
+  setShow(false);
+  setHardPile([]);
+  setMediumPile([]);
+  setStreak(0);
+  setLives(3);
+  setSpeedScore(0);
+  setSpeedTime(60);
+}
 
   async function clearSession() {
-    if (!sessionKey || !noteId) return;
+  if (!sessionKey || !noteId) return;
 
-    localStorage.removeItem(sessionKey);
+  skipNextSaveRef.current = true;
 
-    try {
-      await fetch(`http://localhost:8000/notes/flashcards/session/${noteId}`, {
-        method: "DELETE",
-      });
-    } catch (e) {
-      console.error("Failed to clear backend session", e);
-    }
+  localStorage.removeItem(sessionKey);
 
-    setAllCards([]);
-    lastLoadedNoteId.current = undefined;
-    void loadFreshDeck(noteId);
+  if (timerRef.current) {
+    clearInterval(timerRef.current);
+    timerRef.current = null;
   }
+
+  const baseDeck = allCards.length ? allCards : cards;
+  const freshDeck = shuffle(baseDeck);
+
+  setAllCards(baseDeck);
+  setCards(freshDeck);
+  setI(0);
+  setShow(false);
+  setHardPile([]);
+  setMediumPile([]);
+  setMode("normal");
+  setStreak(0);
+  setLives(3);
+  setSpeedScore(0);
+  setSpeedTime(60);
+
+  saveSession(sessionKey, {
+    cards: freshDeck,
+    allCards: baseDeck,
+    index: 0,
+    hardPile: [],
+    mediumPile: [],
+    mode: "normal",
+  });
+
+  try {
+    await fetch(`http://localhost:8000/notes/flashcards/session/${noteId}`, {
+      method: "DELETE",
+    });
+
+    await fetch(`http://localhost:8000/notes/flashcards/session/${noteId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        index: 0,
+        mode: "normal",
+        deck_ids: freshDeck.map((c) => c.id),
+        all_deck_ids: baseDeck.map((c) => c.id),
+        hard_ids: [],
+        medium_ids: [],
+      }),
+    });
+  } catch (e) {
+    console.error("Failed to reset backend session", e);
+  }
+}
 
   function finishSession() {
     alert("🎉 All reviews complete!");
