@@ -364,6 +364,9 @@ class Flashcard(Base):
     answer = Column(Text, nullable=False)
     confidence = Column(Float, nullable=False, server_default=text("0.5"))
     next_review = Column(DateTime(timezone=True), server_default=func.now())
+    card_type = Column(Text, nullable=True)
+    source_evidence = Column(Text, nullable=True)
+    why_this_card_matters = Column(Text, nullable=True)
     interval_days = Column(Integer, server_default=text("1"))
     review_count = Column(Integer, server_default=text("0"))
 

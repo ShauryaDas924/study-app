@@ -4,7 +4,11 @@ from sqlalchemy import select
 from pydantic import BaseModel
 from uuid import UUID
 from typing import Optional
-from app.jobs.concept_jobs import concept_extraction_job
+from app.jobs.concept_jobs import (
+    concept_extraction_job,
+    get_concept_job_status,
+    set_concept_job_status,
+)
 from app.db import get_db
 from app.models import Note
 from app.services.auth import get_current_user_id
@@ -66,6 +70,20 @@ async def create_note(
         obj.extraction_started_at = None
         obj.extraction_finished_at = None
         await db.commit()
+
+        set_concept_job_status(
+            str(obj.id),
+            {
+                "note_id": str(obj.id),
+                "user_id": str(user_id),
+                "status": "queued",
+                "progress": 0,
+                "mode": mode,
+                "error": None,
+                "started_at": None,
+                "finished_at": None,
+            },
+        )
 
         print(f"[notes.create_note] queued extraction for note={obj.id} mode={mode}")
 
@@ -134,6 +152,20 @@ async def start_extract_note_concepts(
     note.extraction_started_at = None
     note.extraction_finished_at = None
     await db.commit()
+    
+    set_concept_job_status(
+        str(note.id),
+        {
+            "note_id": str(note.id),
+            "user_id": str(user_id),
+            "status": "queued",
+            "progress": 0,
+            "mode": mode,
+            "error": None,
+            "started_at": None,
+            "finished_at": None,
+        },
+    )
 
     background_tasks.add_task(
         concept_extraction_job,
@@ -153,23 +185,30 @@ async def start_extract_note_concepts(
 @router.get("/{note_id}/extract/status", response_model=ExtractionStatusOut)
 async def get_extract_note_status(
     note_id: UUID,
-    db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
-    res = await db.execute(
-        select(Note).where(Note.user_id == user_id, Note.id == note_id)
-    )
-    note = res.scalar_one_or_none()
+    job = get_concept_job_status(str(note_id))
 
-    if not note:
-        raise HTTPException(404, "Note not found")
+    if not job:
+        return {
+            "note_id": str(note_id),
+            "status": "idle",
+            "progress": 0,
+            "mode": None,
+            "error": None,
+            "started_at": None,
+            "finished_at": None,
+        }
+
+    if str(job.get("user_id")) != str(user_id):
+        raise HTTPException(404, "Job not found")
 
     return {
-        "note_id": str(note.id),
-        "status": note.extraction_status or "idle",
-        "progress": int(note.extraction_progress or 0),
-        "mode": note.extraction_mode,
-        "error": note.extraction_error,
-        "started_at": note.extraction_started_at.isoformat() if note.extraction_started_at else None,
-        "finished_at": note.extraction_finished_at.isoformat() if note.extraction_finished_at else None,
+        "note_id": str(note_id),
+        "status": job.get("status", "idle"),
+        "progress": int(job.get("progress", 0)),
+        "mode": job.get("mode"),
+        "error": job.get("error"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
     }

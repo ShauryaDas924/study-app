@@ -811,12 +811,20 @@ A concept can be ANY testable knowledge unit, including:
 - common student mistakes
 - interpretations of results
 - something usable in an applied scenario question  
-If unsure, INCLUDE rather than exclude.
-IMPORTANT:
-Do NOT filter too aggressively.
-If a term or idea looks testable, include it.
+If unsure, include the concept ONLY if it has clear slide evidence and would create a useful flashcard.
 
-It is better to include more relevant concepts than miss testable ones.
+IMPORTANT:
+Do NOT extract decorative, weak, or merely mentioned ideas.
+Do NOT extract a concept just because a word appears once.
+A concept should be included only if it helps with one of:
+- direct recall of a core definition
+- comparison/distinction
+- scenario application
+- process/order understanding
+- real mistake prevention
+- exam-style classification
+
+It is better to miss a weak minor detail than create low-value flashcards.
 
 SUPPORTING DEPTH RULE:
 Do NOT extract only headline concepts.
@@ -873,12 +881,14 @@ If a named law, theorem, or model appears,
 assign confidence ≥ 0.7 unless clearly minor.
 
 QUALITY RULES:
-- Return 35–120 concepts if available  
-- Cover ALL major sections of the text  
-- Include both major and supporting concepts  
-- Each concept must be concrete and testable  
-- Avoid vague phrases like "important idea"  
-- Avoid overly broad topics like "technology" or "science"  
+- Return the smallest complete set of high-value concepts.
+- For normal lecture slides, aim for 20–70 concepts unless the lecture is very dense.
+- Cover every major section, but do not create multiple concepts for the same idea.
+- Include supporting concepts only when they help with application, comparison, process order, or mistake prevention.
+- Each concept must be concrete, testable, and useful as a flashcard.
+- Avoid vague phrases like "important idea."
+- Avoid overly broad topics like "technology" or "science."
+- Avoid extracting examples as concepts unless the example teaches a transferable exam pattern.
 
 
 STRICT FILTERING RULES:
@@ -909,12 +919,28 @@ Return JSON ONLY:
   "concepts":[
     {
       "name":"snake_case_name",
+      "type":"definition | comparison | process | framework | application | example | statistic | pitfall | condition | list | relationship | consequence",
       "description":"clear one-sentence explanation",
+      "definition":"precise definition if available, otherwise empty string",
+      "when_to_use":"when this concept applies, if stated or clearly implied by the notes",
+      "pitfalls":["only text-grounded mistakes or confusions"],
+      "related_concepts":["snake_case_related_concept"],
       "evidence":"exact phrase or sentence copied from the text",
       "confidence":0.0
     }
   ]
 }
+TYPE RULES:
+- Use "definition" for core vocabulary.
+- Use "comparison" only when two concepts are contrasted.
+- Use "process" only for ordered steps or workflows.
+- Use "application" for scenario-useful ideas.
+- Use "example" only when the example teaches a transferable pattern.
+- Use "statistic" only when the exact number is likely testable.
+- Use "pitfall" only when the notes explicitly imply a real confusion or mistake.
+- Use "condition" for boundaries, assumptions, or when-to-use rules.
+- Use "list" only when the full list is likely testable.
+- Use "relationship" for cause-effect or concept-linking ideas.
 
 CRITICAL RULE:
 
@@ -1353,7 +1379,6 @@ def normalize_concept_name(name: str):
 
 
 EXAM_META_PATTERNS = [
-    r"\bexam\b",
     r"\bhigh[- ]yield\b",
     r"\boften tested\b",
     r"\bfrequently tested\b",
@@ -1398,9 +1423,52 @@ def _matches_any(patterns: list[str], text: str) -> bool:
     text = (text or "").lower()
     return any(re.search(p, text, re.I) for p in patterns)
 
+def score_flashcard_quality(card: dict) -> float:
+    score = float(card.get("confidence", 0.7))
+
+    card_type = card.get("card_type", "")
+    q = (card.get("question") or "").strip().lower()
+    a = (card.get("answer") or "").strip()
+    evidence = (card.get("source_evidence") or "").strip()
+    why = (card.get("why_this_card_matters") or "").strip()
+
+    high_value_types = {
+        "comparison": 0.08,
+        "application": 0.08,
+        "scenario": 0.08,
+        "pitfall": 0.07,
+        "condition": 0.07,
+        "process": 0.05,
+        "definition": 0.03,
+        "list_recall": 0.01,
+    }
+
+    score += high_value_types.get(card_type, 0)
+
+    if evidence:
+        score += 0.04
+
+    if why and len(why.split()) >= 4:
+        score += 0.03
+
+    if q.startswith("what is "):
+        score -= 0.02
+
+    if len(a.split()) > 28:
+        score -= 0.04
+
+    if len(q.split()) > 24:
+        score -= 0.04
+
+    return score
+
 
 def enforce_card_budgets(cards: list[dict], concepts: list[dict]) -> list[dict]:
     budget_map = {c["name"]: int(c.get("card_budget", 0)) for c in concepts}
+
+    # Keep the best cards first, not merely the first generated cards.
+    cards = sorted(cards, key=score_flashcard_quality, reverse=True)
+
     kept = []
     counts = {}
 
@@ -1425,6 +1493,7 @@ def classify_concept_role(concept: dict) -> str:
     name = concept.get("name", "")
     desc = concept.get("description", "")
     evidence = concept.get("evidence", "")
+    ctype = concept.get("type", "")
     text = f"{name} {desc} {evidence}".strip()
 
     exam_score = float(concept.get("exam_score", 0.5))
@@ -1434,20 +1503,38 @@ def classify_concept_role(concept: dict) -> str:
     if _matches_any(EXAM_META_PATTERNS, text):
         return "exam_meta"
 
+    # Prefer the LLM-assigned concept type when available.
+    if ctype in {"pitfall", "example", "statistic", "comparison", "process", "application", "condition", "list", "relationship", "framework", "definition", "consequence"}:
+        if ctype == "comparison":
+            return "core" if (exam_score >= 0.72 or final_score >= 0.72 or confidence >= 0.78) else "supporting"
+
+        if ctype == "process":
+            return "process_step"
+
+        if ctype == "framework":
+            return "core"
+
+        if ctype == "definition":
+            return "core" if (exam_score >= 0.70 or final_score >= 0.70 or confidence >= 0.76) else "supporting"
+
+        if ctype in {"application", "condition", "relationship", "list", "consequence"}:
+            return "core" if (exam_score >= 0.76 or final_score >= 0.76 or confidence >= 0.82) else "supporting"
+
+        return ctype
+
     if _matches_any(PITFALL_PATTERNS, name) or _matches_any(PITFALL_PATTERNS, desc):
         return "pitfall"
 
     if _matches_any(STEP_PATTERNS, name) or _matches_any(STEP_PATTERNS, evidence):
         return "process_step"
 
-    if _matches_any(EXAMPLE_PATTERNS, evidence) or _matches_any(EXAMPLE_PATTERNS, desc):
-        return "example"
-
     if _matches_any(STATISTIC_PATTERNS, evidence):
         if len(desc.split()) <= 16:
             return "statistic"
 
-    # stricter core bar
+    if _matches_any(EXAMPLE_PATTERNS, evidence) or _matches_any(EXAMPLE_PATTERNS, desc):
+        return "example"
+
     if final_score >= 0.78 or exam_score >= 0.82 or confidence >= 0.88:
         return "core"
 
@@ -1456,35 +1543,72 @@ def classify_concept_role(concept: dict) -> str:
 
 def assign_card_budget(concept: dict) -> int:
     role = concept.get("role") or classify_concept_role(concept)
+    ctype = concept.get("type", "")
 
     exam_score = float(concept.get("exam_score", 0.5))
     confidence = float(concept.get("confidence", 0.5))
     final_score = float(concept.get("final_score", 0.5))
 
+    evidence = (concept.get("evidence") or "").strip()
+    definition = (concept.get("definition") or "").strip()
+    when_to_use = (concept.get("when_to_use") or "").strip()
+    pitfalls = concept.get("pitfalls") or []
+
+    has_evidence = len(evidence) >= 4
+    has_payload = bool(definition or when_to_use or pitfalls or evidence)
+
     if role == "exam_meta":
         return 0
 
-    if role == "core":
-        if final_score >= 0.82 or exam_score >= 0.84 or confidence >= 0.90:
+    if not has_payload:
+        return 0
+
+    # Keep short but real slide facts.
+    # Examples: "Data about data", "Rows are records", "Cells operate independently".
+    if not has_evidence and confidence < 0.75:
+        return 0
+
+    # Lecture-matching decks need enough coverage.
+    # Comparisons, applications, relationships, lists, and consequences are high-value.
+    if ctype in {"comparison", "condition", "application", "relationship", "list", "consequence"}:
+        if confidence >= 0.80 or exam_score >= 0.78 or final_score >= 0.78:
             return 2
-        return 1
+        if confidence >= 0.60 or exam_score >= 0.60 or final_score >= 0.60:
+            return 1
+        return 0
 
-    if role == "process_step":
-        return 1 if (confidence >= 0.72 or exam_score >= 0.75 or final_score >= 0.74) else 0
+    # Core definitions usually deserve one card.
+    # Central definitions deserve a second card for usage/confusion/application.
+    if ctype in {"definition", "framework"} or role == "core":
+        if confidence >= 0.92 or exam_score >= 0.88 or final_score >= 0.88:
+            return 2
+        if confidence >= 0.62 or exam_score >= 0.62 or final_score >= 0.62:
+            return 1
+        return 0
 
-    if role == "pitfall":
-        return 1 if (confidence >= 0.70 or exam_score >= 0.74 or final_score >= 0.72) else 0
+    # Grounded pitfall cards are useful, but usually one is enough.
+    if ctype == "pitfall" or role == "pitfall":
+        if pitfalls or evidence:
+            return 1 if (confidence >= 0.62 or exam_score >= 0.62 or final_score >= 0.62) else 0
+        return 0
 
-    if role == "example":
-        return 1 if (confidence >= 0.78 or exam_score >= 0.78 or final_score >= 0.76) else 0
+    # Processes are useful if they teach sequence, purpose, or order mistakes.
+    if ctype == "process" or role == "process_step":
+        return 1 if (confidence >= 0.62 or exam_score >= 0.62 or final_score >= 0.62) else 0
 
-    if role == "statistic":
-        return 1 if (confidence >= 0.82 or exam_score >= 0.84) else 0
+    # Examples should become cards when they teach a reusable pattern.
+    if ctype == "example" or role == "example":
+        return 1 if (confidence >= 0.70 or exam_score >= 0.70 or final_score >= 0.70) else 0
 
+    # Statistics only if likely testable.
+    if ctype == "statistic" or role == "statistic":
+        return 1 if (confidence >= 0.76 or exam_score >= 0.76 or final_score >= 0.76) else 0
+
+    # Supporting concepts should not be starved.
     if role == "supporting":
-        return 1 if (confidence >= 0.68 or exam_score >= 0.72 or final_score >= 0.70) else 0
+        return 1 if (confidence >= 0.66 or exam_score >= 0.66 or final_score >= 0.66) else 0
 
-    return 1 if confidence >= 0.70 else 0
+    return 1 if (confidence >= 0.66 or exam_score >= 0.66 or final_score >= 0.66) else 0
 
 
 def annotate_concepts_for_flashcards(concepts: list[dict]) -> list[dict]:
@@ -1869,12 +1993,130 @@ Class concepts:
     )
 
     return resp.choices[0].message.content
+
+def quality_filter_flashcards(cards: list[dict]) -> list[dict]:
+    filtered = []
+
+    weak_question_starts = (
+        "what is an important idea",
+        "why is it important",
+        "what is this concept",
+        "what should students know",
+        "what is a key idea",
+        "what is the main idea",
+    )
+
+    vague_answers = {
+        "it is important",
+        "this is important",
+        "it depends",
+        "it helps",
+        "they are related",
+        "it is useful",
+    }
+
+    valid_card_types = {
+        "definition",
+        "comparison",
+        "application",
+        "scenario",
+        "pitfall",
+        "process",
+        "condition",
+        "list_recall",
+    }
+
+    for card in cards:
+        q = (card.get("question") or "").strip()
+        a = (card.get("answer") or "").strip()
+        evidence = (card.get("source_evidence") or "").strip()
+        card_type = (card.get("card_type") or "").strip()
+
+        if not q or not a:
+            continue
+
+        # Keep questions focused, but allow real lecture wording.
+        if len(q.split()) > 34:
+            continue
+
+        # Allow enough answer length for definitions/comparisons, but block mini-lectures.
+        if len(a.split()) > 45:
+            continue
+
+        # Allow short factual answers like "Data about data."
+        if len(a.split()) < 2 and card_type not in {"definition", "list_recall"}:
+            continue
+
+        if any(q.lower().startswith(s) for s in weak_question_starts):
+            continue
+
+        if a.lower() in vague_answers:
+            continue
+
+        if card_type and card_type not in valid_card_types:
+            continue
+
+        # Require some grounding, but do not kill good short slide evidence.
+        if "source_evidence" in card and len(evidence) < 4:
+            continue
+
+        filtered.append(card)
+
+    return filtered
     
-    
+def repair_flashcard_schema(cards: list[dict]) -> list[dict]:
+    repaired = []
+
+    valid_card_types = {
+        "definition",
+        "comparison",
+        "application",
+        "scenario",
+        "pitfall",
+        "process",
+        "condition",
+        "list_recall",
+    }
+
+    for card in cards:
+        q = (card.get("question") or "").strip()
+        a = (card.get("answer") or "").strip()
+        concept_name = (card.get("concept_name") or "").strip()
+        card_type = (card.get("card_type") or "").strip()
+        evidence = (card.get("source_evidence") or "").strip()
+        why = (card.get("why_this_card_matters") or "").strip()
+
+        if not q or not a or not concept_name:
+            continue
+
+        if card_type not in valid_card_types:
+            card_type = "definition"
+
+        # Do not drop otherwise good cards only because the model gave short evidence.
+        # The quality filter will still remove totally ungrounded cards.
+        if len(evidence) < 4:
+            continue
+
+        if len(why.split()) < 2:
+            why = "Tests a lecture-grounded concept."
+
+        card["question"] = q
+        card["answer"] = a
+        card["concept_name"] = concept_name
+        card["card_type"] = card_type
+        card["source_evidence"] = evidence
+        card["why_this_card_matters"] = why
+        card["confidence"] = float(card.get("confidence", 0.7))
+
+        repaired.append(card)
+
+    return repaired
+
+
 async def generate_flashcards_from_concepts(concepts: list[dict]):
     all_cards = []
 
-    for batch in batch_list(concepts, size=12):
+    for batch in batch_list(concepts, size=16):
         resp = await openai_chat_create(
             model="gpt-5.4",
             messages=[
@@ -1891,9 +2133,11 @@ Follow the MINIMUM INFORMATION PRINCIPLE used by Anki.
 PRIMARY GOAL
 --------------------------------
 
-Build the SMALLEST high-quality deck that still preserves BROAD and DEEP coverage of the notes.
+Build a COMPLETE, high-quality lecture-matching deck that preserves the important definitions, comparisons, conditions, examples, pitfalls, and application points from the notes.
 
-Do NOT maximize card count.
+Do NOT make the deck tiny just to be efficient.
+Do NOT maximize card count either.
+The goal is high coverage with low waste.
 Maximize:
 • learning value per card
 • exam performance
@@ -1919,7 +2163,7 @@ CORE LEARNING RULES
 
 1. Each flashcard must test ONE meaningful concept or decision point.
 2. Do NOT split a definition into trivial micro-questions.
-3. Prefer ONE strong card over several weak or overlapping cards.
+3. Prefer ONE strong card over several weak or overlapping cards, but do not collapse genuinely different lecture ideas into one card.
 4. Answers must be SHORT (1–2 lines max).
 5. Avoid paraphrasing the same concept multiple times.
 6. Prefer deeper conceptual questions over surface rewording.
@@ -2044,6 +2288,14 @@ Only generate a pitfall card if:
 • the pitfall clarifies a boundary, contrast, or condition
 
 If not, DO NOT generate a pitfall card.
+STRICT PITFALL GROUNDING:
+Do not invent a pitfall from general teaching experience.
+A pitfall card is allowed only if the concept payload contains:
+- a pitfalls field with a concrete mistake, OR
+- evidence that explicitly contrasts two concepts, OR
+- evidence that states a boundary, condition, exception, or warning.
+
+If the pitfall is not directly supported by the payload, generate a normal definition, comparison, or application card instead.
 
 PREFERRED PITFALL TYPES
 
@@ -2230,21 +2482,61 @@ Answers must be:
 Do not write mini-paragraphs.
 
 --------------------------------
+CAUSAL ACCURACY RULE
+--------------------------------
+
+For cause/effect cards, the answer must preserve the correct direction of causality.
+
+Bad:
+Q: Why does normalization help prevent integrity issues?
+A: Because integrity problems arise when duplicated data are eliminated.
+
+Good:
+Q: Why does normalization help prevent integrity issues?
+A: Because normalization eliminates duplicated data, reducing inconsistency and update anomalies.
+
+If a card uses "because", verify that the cause actually produces the effect.
+Do not reverse causal direction.
+
+--------------------------------
 OUTPUT FORMAT
 --------------------------------
 
 Return JSON ONLY:
 
 {
+
   "flashcards":[
+
     {
+
       "concept_name":"snake_case_name",
+
+      "card_type":"definition | comparison | application | scenario | pitfall | process | condition | list_recall",
+
       "question":"...",
+
       "answer":"...",
+
+      "source_evidence":"exact evidence phrase used from the concept payload",
+
+      "why_this_card_matters":"short reason this card helps exam performance",
+
       "confidence":0.8
+
     }
+
   ]
+
 }
+
+OUTPUT QUALITY RULES:
+- source_evidence must be copied from the concept payload.
+- If no source_evidence supports the card, do not generate the card.
+- why_this_card_matters must be specific, not generic.
+- Do not use the same card_type repeatedly unless the input truly requires it.
+- Every card must be useful for one of: recall, distinction, application, process order, or mistake prevention.
+
 """
             },
             {
@@ -2252,14 +2544,23 @@ Return JSON ONLY:
                     "content": f"""
 Generate flashcards from these concepts.
 
-Requirements:
+Hard requirements:
 - Obey card_budget strictly.
 - Return concept_name for every card.
+- Return card_type for every card.
+- Return source_evidence for every card.
 - Keep cards atomic.
+- Each answer must be 1–2 lines maximum.
 - Do not compress multiple concepts into one card.
 - Avoid paraphrase duplicates.
 - Prefer the smallest strong deck over maximum quantity.
-- Prefer mistake prevention, conditions, comparisons, and when-to-use over shallow recall when those are grounded.
+- Prefer mistake prevention, conditions, comparisons, and when-to-use over shallow recall ONLY when grounded.
+- Do not create a pitfall card unless the concept payload explicitly supports the pitfall.
+- Do not create cards from examples unless the example teaches a reusable exam pattern.
+- If a concept has card_budget=1, choose the single highest-value card type for that concept.
+- If a concept has card_budget=2, create:
+  1) one anchor card
+  2) one deeper card, such as comparison/application/pitfall/condition
 
 Concepts:
 {json.dumps(batch)}
@@ -2281,8 +2582,20 @@ Concepts:
         if q:
             unique[q] = c
 
-    deduped = dedupe_flashcards(list(unique.values()))
-    budgeted = enforce_card_budgets(deduped, concepts)
+    repaired = repair_flashcard_schema(list(unique.values()))
+    deduped = dedupe_flashcards(repaired)
+    filtered = quality_filter_flashcards(deduped)
+    budgeted = enforce_card_budgets(filtered, concepts)
+
+    print("[flashcards] counts", {
+        "raw": len(all_cards),
+        "unique": len(unique),
+        "repaired": len(repaired),
+        "deduped": len(deduped),
+        "filtered": len(filtered),
+        "budgeted": len(budgeted),
+    })
+
     return budgeted
 
 async def generate_math_flashcards_from_concepts(concepts: list[dict]):
@@ -2815,9 +3128,39 @@ def flashcards_too_similar(a: dict, b: dict) -> bool:
         b_words = set(qb.split())
         if a_words and b_words:
             overlap = len(a_words & b_words) / max(1, len(a_words | b_words))
-            if overlap >= 0.78:
-                return True
 
+            # Same concept can validly have a definition card and an application/pitfall card.
+            # Only kill very similar cards of the same type.
+            if overlap >= 0.88 and a.get("card_type") == b.get("card_type"):
+                return True
+    
+    # Same concept + same card type is often duplicate unless the questions are clearly different.
+    if a.get("concept_name") == b.get("concept_name") and a.get("card_type") == b.get("card_type"):
+        a_words = set(qa.split())
+        b_words = set(qb.split())
+        ans_words_a = set(aa.split())
+        ans_words_b = set(ab.split())
+
+        q_overlap = len(a_words & b_words) / max(1, len(a_words | b_words))
+        a_overlap = len(ans_words_a & ans_words_b) / max(1, len(ans_words_a | ans_words_b))
+
+        if q_overlap >= 0.72 or a_overlap >= 0.78:
+            return True
+
+    # Very short answers with the same concept often indicate duplicate recognition cards.
+    if a.get("concept_name") == b.get("concept_name"):
+        if len(aa.split()) <= 6 and len(ab.split()) <= 6:
+            if aa == ab:
+                return True
+    
+    ea = normalize_card_text(a.get("source_evidence", ""))
+    eb = normalize_card_text(b.get("source_evidence", ""))
+
+    # Same evidence + same concept + same type usually means duplicate learning value.
+    if a.get("concept_name") == b.get("concept_name") and ea and eb:
+        if ea == eb and a.get("card_type") == b.get("card_type"):
+            return True
+    
     return False
 
 

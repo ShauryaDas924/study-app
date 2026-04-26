@@ -19,7 +19,7 @@ from app.services.llm import (
     extract_concepts_from_note,
     extract_math_concepts_from_note
 )
-from app.services.llm import classify_concept_role, assign_card_budget
+from app.services.llm import classify_concept_role, assign_card_budget, flashcards_too_similar
 from app.services.llm import (
     generate_flashcards_from_concepts,
     generate_math_flashcards_from_concepts
@@ -30,12 +30,37 @@ from datetime import datetime
 from datetime import datetime, timezone
 from pydantic import BaseModel
 router = APIRouter(prefix="/notes", tags=["concepts"])
+
+def pitfalls_to_db(value) -> str:
+    if value is None:
+        return ""
+
+    if isinstance(value, list):
+        return "; ".join(str(x).strip() for x in value if str(x).strip())
+
+    return str(value).strip()
+
+
+def pitfalls_from_db(value) -> list[str]:
+    if not value:
+        return []
+
+    if isinstance(value, list):
+        return value
+
+    return [
+        part.strip()
+        for part in str(value).split(";")
+        if part.strip()
+    ]
+
+
 @router.post("/{note_id}/extract-concepts")
-async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSession = Depends(get_db), user_id: UUID = Depends(get_current_user_id)):
-    res = await db.execute(select(Note).where(Note.id == note_id, Note.user_id == user_id))
-    note = res.scalar_one_or_none()
-    if not note:
-        raise HTTPException(404, "Note not found")
+async def extract_concepts_deprecated(note_id: UUID):
+    raise HTTPException(
+        status_code=410,
+        detail="This endpoint is deprecated. Use POST /notes/{note_id}/extract/start instead."
+    )
 
     def flatten_note_json(content):
         if isinstance(content, dict):
@@ -89,10 +114,12 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
 
         enriched_concepts.append({
             "name": c["name"],
+            "type": c.get("type", ""),
             "description": c.get("description"),
-            "definition": c.get("description"),
-            "when_to_use": when_text,
-            "pitfalls": pitfall_text,
+            "definition": c.get("definition") or c.get("description") or "",
+            "when_to_use": c.get("when_to_use") or when_text,
+            "pitfalls": c.get("pitfalls") or ([pitfall_text] if pitfall_text else []),
+            "related_concepts": c.get("related_concepts", []),
             "evidence": c.get("evidence"),
             "confidence": float(c.get("confidence", 0.5)),
             "exam_priority_locked": c.get("exam_priority_locked", False),
@@ -141,7 +168,7 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
                 concept.confidence = max(float(concept.confidence or 0.5), new_conf)
 
                 # Refresh pitfall with grounded context
-                concept.pitfalls = c.get("pitfalls")
+                concept.pitfalls = pitfalls_to_db(c.get("pitfalls"))
                 concept.when_to_use = c.get("when_to_use")
 
             # Avoid duplicate note-concept links
@@ -164,17 +191,25 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
 
         
         
-        concept = Concept(
+        concept_kwargs = dict(
             user_id=note.user_id,
             class_id=note.class_id,
             name=c["name"],
             description=c.get("description"),
-            definition=c.get("definition"),
+            definition=c.get("definition") or c.get("description") or "",
             when_to_use=c.get("when_to_use"),
-            pitfalls=c.get("pitfalls"),
+            pitfalls=pitfalls_to_db(c.get("pitfalls")),
             confidence=float(c.get("confidence", 0.5)),
             evidence=c.get("evidence")
         )
+
+        if hasattr(Concept, "type"):
+            concept_kwargs["type"] = c.get("type", "")
+    
+        if hasattr(Concept, "related_concepts"):
+            concept_kwargs["related_concepts"] = c.get("related_concepts", [])
+
+        concept = Concept(**concept_kwargs)
 
         db.add(concept)
         await db.flush()
@@ -213,11 +248,13 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
     for concept in linked_concepts:
         payload = {
             "name": concept.name,
-            "description": concept.description,
-            "definition": concept.definition,
-            "when_to_use": concept.when_to_use,
-            "pitfalls": concept.pitfalls,
-            "evidence": concept.evidence,
+            "type": getattr(concept, "type", "") or "",
+            "description": concept.description or "",
+            "definition": getattr(concept, "definition", "") or "",
+            "when_to_use": getattr(concept, "when_to_use", "") or "",
+            "pitfalls": pitfalls_from_db(getattr(concept, "pitfalls", "")),
+            "related_concepts": getattr(concept, "related_concepts", []) or [],
+            "evidence": concept.evidence or "",
             "confidence": float(concept.confidence or 0.5),
         }
         payload["role"] = classify_concept_role(payload)
@@ -253,35 +290,59 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
             flashcards = await generate_flashcards_from_concepts(concept_payloads)
 
         # get created concept objects
-        concept_lookup = {}
+        concept_lookup = {
+            concept.name: concept.id
+            for concept in linked_concepts
+        }
 
-        for c in enriched_concepts:
-            res = await db.execute(
-                select(Concept.id).where(
-                    Concept.name.ilike(c["name"]),
-                    Concept.class_id == note.class_id,
-                    Concept.user_id == note.user_id
-                )
-            )
-            cid = res.scalar()
-            if cid:
-                concept_lookup[c["name"]] = cid
+        # Also support normalized lookup because model output may vary slightly.
+        normalized_concept_lookup = {
+            concept.name.lower().replace(" ", "_"): concept.id
+            for concept in linked_concepts
+        }
                 
         existing_flashcards_res = await db.execute(
-            select(Flashcard.question).where(
+            select(Flashcard.question, Flashcard.answer).where(
                 Flashcard.user_id == note.user_id,
                 Flashcard.note_id == note.id
             )
         )
+
+        existing_flashcards = [
+            {
+                "question": row[0] or "",
+                "answer": row[1] or "",
+            }
+            for row in existing_flashcards_res.fetchall()
+        ]
+
         existing_flashcard_questions = {
-            row[0].strip().lower() for row in existing_flashcards_res.fetchall()
+            c["question"].strip().lower()
+            for c in existing_flashcards
         }
         for card in flashcards:
             q_key = card.get("question", "").strip().lower()
             if not q_key or q_key in existing_flashcard_questions:
                 continue
+            
+            candidate = {
+                "question": card.get("question", ""),
+                "answer": card.get("answer", ""),
+                "concept_name": card.get("concept_name", ""),
+                "card_type": card.get("card_type", ""),
+                "source_evidence": card.get("source_evidence", ""),
+            }
 
-            matched_concept_id = concept_lookup.get(card.get("concept_name"))
+            if any(flashcards_too_similar(candidate, old) for old in existing_flashcards):
+                continue
+
+            card_concept_name = (card.get("concept_name") or "").strip()
+            matched_concept_id = concept_lookup.get(card_concept_name)
+
+            if not matched_concept_id:
+                matched_concept_id = normalized_concept_lookup.get(
+                    card_concept_name.lower().replace(" ", "_")
+                )
 
             if not matched_concept_id:
                 for name, cid in concept_lookup.items():
@@ -291,19 +352,31 @@ async def extract_concepts(note_id: UUID, mode: str = "general", db: AsyncSessio
                         matched_concept_id = cid
                         break
 
-            fc = Flashcard(
+            flashcard_kwargs = dict(
                 user_id=note.user_id,
                 class_id=note.class_id,
                 note_id=note.id,
-                concept_id=matched_concept_id,   # ⭐ important fix
+                concept_id=matched_concept_id,
                 question=card["question"],
                 answer=card["answer"],
                 confidence=float(card.get("confidence", 0.7)),
                 next_review=datetime.utcnow()
             )
 
+            if hasattr(Flashcard, "card_type"):
+                flashcard_kwargs["card_type"] = card.get("card_type")
+
+            if hasattr(Flashcard, "source_evidence"):
+                flashcard_kwargs["source_evidence"] = card.get("source_evidence")
+
+            if hasattr(Flashcard, "why_this_card_matters"):
+                flashcard_kwargs["why_this_card_matters"] = card.get("why_this_card_matters")
+
+            fc = Flashcard(**flashcard_kwargs)
+
             db.add(fc)
             existing_flashcard_questions.add(q_key)
+            existing_flashcards.append(candidate)
     try:
         await db.commit()
     except Exception:
@@ -361,6 +434,10 @@ async def flashcards_by_class(
             "answer": c.answer,
             "confidence": float(c.confidence or 0.5),
             "note_id": str(c.note_id) if getattr(c, "note_id", None) else None,
+            "concept_id": str(c.concept_id) if getattr(c, "concept_id", None) else None,
+            "card_type": getattr(c, "card_type", None),
+            "source_evidence": getattr(c, "source_evidence", None),
+            "why_this_card_matters": getattr(c, "why_this_card_matters", None),
         }
         for c in cards
     ]
@@ -428,6 +505,10 @@ async def flashcards_by_note(
             "answer": c.answer,
             "confidence": float(c.confidence or 0.5),
             "note_id": str(c.note_id) if getattr(c, "note_id", None) else None,
+            "concept_id": str(c.concept_id) if getattr(c, "concept_id", None) else None,
+            "card_type": getattr(c, "card_type", None),
+            "source_evidence": getattr(c, "source_evidence", None),
+            "why_this_card_matters": getattr(c, "why_this_card_matters", None),
         }
         for c in cards
     ]
@@ -489,10 +570,24 @@ async def export_flashcards_csv_by_note(
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Question", "Answer", "Confidence"])
+    writer.writerow([
+        "Question",
+        "Answer",
+        "Confidence",
+        "Card Type",
+        "Source Evidence",
+        "Why This Card Matters"
+    ])
 
     for c in cards:
-        writer.writerow([c.question, c.answer, float(c.confidence or 0.5)])
+        writer.writerow([
+            c.question,
+            c.answer,
+            float(c.confidence or 0.5),
+            getattr(c, "card_type", "") or "",
+            getattr(c, "source_evidence", "") or "",
+            getattr(c, "why_this_card_matters", "") or "",
+        ])
 
     output.seek(0)
     return StreamingResponse(
