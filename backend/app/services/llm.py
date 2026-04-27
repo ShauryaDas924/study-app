@@ -447,7 +447,7 @@ NAMED_PATTERN = re.compile(
 async def refine_notes(note_text: str):
 
     resp = await kimi_chat_create(
-        model="kimi-k2.6",
+        model="kimi-k2.5",
         messages=[
             {"role":"system","content":NOTES_REFINEMENT_PROMPT},
             {"role":"user","content":note_text}
@@ -1682,7 +1682,7 @@ async def extract_concepts_from_note(note_text: str):
 
     for chunk in chunks:
         resp = await kimi_chat_create(
-            model="kimi-k2.6",
+            model="kimi-k2.5",
             messages=[
                 {"role": "system", "content": CONCEPT_PROMPT},
                 {"role": "user", "content": chunk},
