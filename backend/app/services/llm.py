@@ -447,7 +447,7 @@ NAMED_PATTERN = re.compile(
 async def refine_notes(note_text: str):
 
     resp = await kimi_chat_create(
-        model="kimi-k2.5",
+        model="kimi-k2.6",
         messages=[
             {"role":"system","content":NOTES_REFINEMENT_PROMPT},
             {"role":"user","content":note_text}
@@ -1500,13 +1500,25 @@ def classify_concept_role(concept: dict) -> str:
     confidence = float(concept.get("confidence", 0.5))
     final_score = float(concept.get("final_score", 0.5))
 
-    if _matches_any(EXAM_META_PATTERNS, text):
-        return "exam_meta"
-
-    # Prefer the LLM-assigned concept type when available.
-    if ctype in {"pitfall", "example", "statistic", "comparison", "process", "application", "condition", "list", "relationship", "framework", "definition", "consequence"}:
+    # Prefer the LLM-assigned concept type first.
+    # Do NOT classify useful application/review concepts as exam_meta just because
+    # their wording mentions "tested" or "exam".
+    if ctype in {
+        "pitfall",
+        "example",
+        "statistic",
+        "comparison",
+        "process",
+        "application",
+        "condition",
+        "list",
+        "relationship",
+        "framework",
+        "definition",
+        "consequence",
+    }:
         if ctype == "comparison":
-            return "core" if (exam_score >= 0.72 or final_score >= 0.72 or confidence >= 0.78) else "supporting"
+            return "core" if (exam_score >= 0.70 or final_score >= 0.70 or confidence >= 0.75) else "supporting"
 
         if ctype == "process":
             return "process_step"
@@ -1515,12 +1527,16 @@ def classify_concept_role(concept: dict) -> str:
             return "core"
 
         if ctype == "definition":
-            return "core" if (exam_score >= 0.70 or final_score >= 0.70 or confidence >= 0.76) else "supporting"
+            return "core" if (exam_score >= 0.65 or final_score >= 0.65 or confidence >= 0.70) else "supporting"
 
         if ctype in {"application", "condition", "relationship", "list", "consequence"}:
-            return "core" if (exam_score >= 0.76 or final_score >= 0.76 or confidence >= 0.82) else "supporting"
+            return "core" if (exam_score >= 0.68 or final_score >= 0.68 or confidence >= 0.72) else "supporting"
 
         return ctype
+
+    # Only use exam_meta when the concept has no useful type.
+    if _matches_any(EXAM_META_PATTERNS, text):
+        return "exam_meta"
 
     if _matches_any(PITFALL_PATTERNS, name) or _matches_any(PITFALL_PATTERNS, desc):
         return "pitfall"
@@ -1535,7 +1551,7 @@ def classify_concept_role(concept: dict) -> str:
     if _matches_any(EXAMPLE_PATTERNS, evidence) or _matches_any(EXAMPLE_PATTERNS, desc):
         return "example"
 
-    if final_score >= 0.78 or exam_score >= 0.82 or confidence >= 0.88:
+    if final_score >= 0.75 or exam_score >= 0.78 or confidence >= 0.82:
         return "core"
 
     return "supporting"
@@ -1666,7 +1682,7 @@ async def extract_concepts_from_note(note_text: str):
 
     for chunk in chunks:
         resp = await kimi_chat_create(
-            model="kimi-k2.5",
+            model="kimi-k2.6",
             messages=[
                 {"role": "system", "content": CONCEPT_PROMPT},
                 {"role": "user", "content": chunk},
@@ -2112,6 +2128,143 @@ def repair_flashcard_schema(cards: list[dict]) -> list[dict]:
 
     return repaired
 
+
+
+def get_uncovered_high_value_concepts(concepts: list[dict], cards: list[dict]) -> list[dict]:
+    covered = {
+        (card.get("concept_name") or "").strip()
+        for card in cards
+        if card.get("concept_name")
+    }
+
+    missing = []
+
+    for c in concepts:
+        name = c.get("name", "")
+        if not name or name in covered:
+            continue
+
+        budget = int(c.get("card_budget", 0))
+        confidence = float(c.get("confidence", 0.5))
+        exam_score = float(c.get("exam_score", 0.5))
+        final_score = float(c.get("final_score", 0.5))
+        ctype = c.get("type", "")
+        role = c.get("role", "")
+        evidence = (c.get("evidence") or "").strip()
+
+        if budget <= 0:
+            continue
+
+        if len(evidence) < 4:
+            continue
+
+        high_value_type = ctype in {
+            "definition",
+            "comparison",
+            "application",
+            "condition",
+            "relationship",
+            "list",
+            "process",
+            "pitfall",
+            "consequence",
+            "framework",
+        }
+
+        high_value_score = (
+            confidence >= 0.70
+            or exam_score >= 0.68
+            or final_score >= 0.68
+            or role == "core"
+            or high_value_type
+        )
+
+        if high_value_score:
+            missing.append(c)
+
+    return missing
+
+
+async def generate_backfill_flashcards_from_concepts(
+    missing_concepts: list[dict],
+    existing_cards: list[dict],
+) -> list[dict]:
+    if not missing_concepts:
+        return []
+
+    all_cards = []
+
+    existing_summary = [
+        {
+            "concept_name": c.get("concept_name"),
+            "card_type": c.get("card_type"),
+            "question": c.get("question"),
+            "answer": c.get("answer"),
+        }
+        for c in existing_cards[:120]
+    ]
+
+    for batch in batch_list(missing_concepts, size=12):
+        resp = await openai_chat_create(
+            model="gpt-5.4",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+You are a strict lecture-grounded flashcard coverage repair engine.
+
+Your job is to create missing flashcards ONLY for important concepts that received no card in the first pass.
+
+Rules:
+- Generate exactly 1 card per missing concept unless card_budget is 2 and the concept is extremely central.
+- Do not duplicate existing cards.
+- Use source_evidence copied from the concept payload.
+- Stay grounded in the payload only.
+- Prefer the highest-value card type for the concept:
+  definition, comparison, application, condition, process, pitfall, or list_recall.
+- Keep answers short, precise, and exam-useful.
+- Do not invent details.
+- Do not create generic "why is this important" cards.
+
+Return JSON ONLY:
+
+{
+  "flashcards": [
+    {
+      "concept_name": "snake_case_name",
+      "card_type": "definition | comparison | application | scenario | pitfall | process | condition | list_recall",
+      "question": "...",
+      "answer": "...",
+      "source_evidence": "exact evidence phrase from concept payload",
+      "why_this_card_matters": "specific exam/study reason",
+      "confidence": 0.8
+    }
+  ]
+}
+"""
+                },
+                {
+                    "role": "user",
+                    "content": f"""
+Existing cards already generated:
+{json.dumps(existing_summary)}
+
+Missing high-value concepts that still need coverage:
+{json.dumps(batch)}
+
+Generate only missing, non-duplicate, lecture-grounded cards.
+"""
+                }
+            ],
+            temperature=0.1,
+            max_completion_tokens=4000,
+        )
+
+        parsed = safe_json_loads(resp.choices[0].message.content)
+        if parsed:
+            all_cards.extend(parsed.get("flashcards", []))
+
+    return all_cards
 
 async def generate_flashcards_from_concepts(concepts: list[dict]):
     all_cards = []
@@ -2585,7 +2738,37 @@ Concepts:
     repaired = repair_flashcard_schema(list(unique.values()))
     deduped = dedupe_flashcards(repaired)
     filtered = quality_filter_flashcards(deduped)
-    budgeted = enforce_card_budgets(filtered, concepts)
+    budgeted_first_pass = enforce_card_budgets(filtered, concepts)
+
+    missing_concepts = get_uncovered_high_value_concepts(concepts, budgeted_first_pass)
+
+    backfill_cards = []
+    if missing_concepts:
+        print("[flashcards] coverage_backfill_needed", {
+            "missing_high_value_concepts": len(missing_concepts),
+            "sample": [
+                {
+                    "name": c.get("name"),
+                    "type": c.get("type"),
+                    "role": c.get("role"),
+                    "budget": c.get("card_budget"),
+                    "confidence": c.get("confidence"),
+                }
+                for c in missing_concepts[:20]
+            ],
+        })
+
+        backfill_cards = await generate_backfill_flashcards_from_concepts(
+            missing_concepts,
+            budgeted_first_pass,
+        )
+
+    combined_cards = budgeted_first_pass + backfill_cards
+
+    repaired_final = repair_flashcard_schema(combined_cards)
+    deduped_final = dedupe_flashcards(repaired_final)
+    filtered_final = quality_filter_flashcards(deduped_final)
+    budgeted_final = enforce_card_budgets(filtered_final, concepts)
 
     print("[flashcards] counts", {
         "raw": len(all_cards),
@@ -2593,10 +2776,13 @@ Concepts:
         "repaired": len(repaired),
         "deduped": len(deduped),
         "filtered": len(filtered),
-        "budgeted": len(budgeted),
+        "first_pass_budgeted": len(budgeted_first_pass),
+        "missing_high_value_concepts": len(missing_concepts),
+        "backfill_generated": len(backfill_cards),
+        "final": len(budgeted_final),
     })
 
-    return budgeted
+    return budgeted_final
 
 async def generate_math_flashcards_from_concepts(concepts: list[dict]):
     all_cards = []

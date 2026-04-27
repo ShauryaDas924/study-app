@@ -68,6 +68,8 @@ class Concept(Base):
     pitfalls = Column(Text, nullable=True)
     confidence = Column(Float, nullable=False, server_default=text("0.5"))
     evidence = Column(Text, nullable=True)
+    type = Column(Text, nullable=True)
+    related_concepts = Column(JSONB, nullable=True)
     embedding = Column(Vector(1536), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

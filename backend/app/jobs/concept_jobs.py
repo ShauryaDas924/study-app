@@ -361,30 +361,31 @@ async def run_concept_extraction_async(
                     "evidence": concept.evidence or "",
                     "confidence": float(concept.confidence or 0.5),
                 }
+
                 payload["role"] = classify_concept_role(payload)
                 payload["card_budget"] = assign_card_budget(payload)
 
                 if payload["card_budget"] > 0:
                     concept_payloads.append(payload)
-                
-                print(
-                    "[concept_job] linked_concepts=",
-                    len(linked_concepts),
-                    "concept_payloads_for_flashcards=",
-                    len(concept_payloads),
-                )
 
-                print("[concept_job] top flashcard payloads:", [
-                    {
-                        "name": p["name"],
-                        "type": p.get("type"),
-                        "role": p.get("role"),
-                        "budget": p.get("card_budget"),
-                        "confidence": p.get("confidence"),
-                        "evidence_len": len(p.get("evidence", "")),
-                    }
-                    for p in concept_payloads[:20]
-                ])
+            print(
+                "[concept_job] linked_concepts=",
+                len(linked_concepts),
+                "concept_payloads_for_flashcards=",
+                len(concept_payloads),
+            )
+
+            print("[concept_job] top flashcard payloads:", [
+                {
+                    "name": p["name"],
+                    "type": p.get("type"),
+                    "role": p.get("role"),
+                    "budget": p.get("card_budget"),
+                    "confidence": p.get("confidence"),
+                    "evidence_len": len(p.get("evidence", "")),
+                }
+                for p in concept_payloads[:20]
+            ])
 
         # DB is closed here.
 
@@ -459,12 +460,18 @@ async def run_concept_extraction_async(
                 for c in existing_flashcards
             }
 
+            saved_count = 0
+            skipped_exact_duplicate = 0
+            skipped_semantic_duplicate = 0
+            skipped_missing_question = 0
+
             for card in flashcards:
-                saved_count = 0
-                skipped_exact_duplicate = 0
-                skipped_semantic_duplicate = 0
                 q_key = card.get("question", "").strip().lower()
-                if not q_key or q_key in existing_flashcard_questions:
+                if not q_key:
+                    skipped_missing_question += 1
+                    continue
+
+                if q_key in existing_flashcard_questions:
                     skipped_exact_duplicate += 1
                     continue
 
@@ -537,6 +544,7 @@ async def run_concept_extraction_async(
                 {
                     "generated": len(flashcards),
                     "saved": saved_count,
+                    "skipped_missing_question": skipped_missing_question,
                     "skipped_exact_duplicate": skipped_exact_duplicate,
                     "skipped_semantic_duplicate": skipped_semantic_duplicate,
                 }
