@@ -2783,6 +2783,132 @@ Concepts:
     })
 
     return budgeted_final
+    
+
+async def ground_flashcards_against_lecture(
+    note_text: str,
+    flashcards: list[dict],
+) -> list[dict]:
+    """
+    Rewrites flashcard answers so they are grounded in the original lecture text.
+
+    This keeps good questions, but forces answers and source_evidence to come
+    from lecture-supported material before the cards are saved.
+    """
+
+    if not flashcards:
+        return []
+
+    if not note_text or not note_text.strip():
+        return flashcards
+
+    grounded_cards: list[dict] = []
+
+    for batch in batch_list(flashcards, size=20):
+        resp = await openai_chat_create(
+            model="gpt-5.4",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+You are a strict lecture-grounding auditor for exam-prep flashcards.
+
+Your task:
+Rewrite flashcard ANSWERS so they are supported ONLY by the provided lecture notes.
+
+You will receive:
+1. Original lecture notes
+2. Draft flashcards
+
+Rules:
+- Keep the question if it is useful and answerable from the lecture.
+- Rewrite the answer using only lecture-supported information.
+- Prefer the lecture's wording when possible.
+- Do NOT add outside textbook knowledge.
+- Do NOT invent examples.
+- Do NOT invent professor intentions.
+- Do NOT invent common mistakes.
+- Do NOT add unsupported edge cases.
+- Do NOT add unsupported SQL behavior.
+- Do NOT add unsupported conditions.
+- If the draft answer says something not supported by the lecture, remove or correct it.
+- If the question is not answerable from the lecture, mark supported as false.
+- If the answer is only partly supported, rewrite it to the supported version.
+- Keep answers short: 1–2 lines maximum.
+- Every supported card must include a source_evidence phrase copied or closely grounded from the lecture notes.
+- Do not make the deck prettier. Make it safer and more lecture-faithful.
+
+Return JSON only:
+
+{
+  "flashcards": [
+    {
+      "concept_name": "...",
+      "card_type": "...",
+      "question": "...",
+      "answer": "...",
+      "source_evidence": "...",
+      "why_this_card_matters": "...",
+      "confidence": 0.8,
+      "supported": true
+    }
+  ]
+}
+"""
+                },
+                {
+                    "role": "user",
+                    "content": f"""
+Original lecture notes:
+{note_text[:24000]}
+
+Draft flashcards:
+{json.dumps(batch, ensure_ascii=False)}
+"""
+                }
+            ],
+            temperature=0.1,
+            max_completion_tokens=5000,
+        )
+
+        parsed = safe_json_loads(resp.choices[0].message.content)
+
+        if not parsed:
+            # If grounding fails for this batch, keep the original batch rather than losing cards.
+            grounded_cards.extend(batch)
+            continue
+
+        for card in parsed.get("flashcards", []):
+            if card.get("supported") is False:
+                continue
+
+            question = str(card.get("question", "")).strip()
+            answer = str(card.get("answer", "")).strip()
+
+            if not question or not answer:
+                continue
+
+            grounded_cards.append({
+                "concept_name": card.get("concept_name", ""),
+                "card_type": card.get("card_type", ""),
+                "question": question,
+                "answer": answer,
+                "source_evidence": card.get("source_evidence", ""),
+                "why_this_card_matters": card.get("why_this_card_matters", ""),
+                "confidence": float(card.get("confidence", 0.75) or 0.75),
+            })
+
+    repaired = repair_flashcard_schema(grounded_cards)
+    deduped = dedupe_flashcards(repaired)
+    filtered = quality_filter_flashcards(deduped)
+
+    print("[flashcards] grounding", {
+        "before": len(flashcards),
+        "after_grounding": len(grounded_cards),
+        "after_filtering": len(filtered),
+    })
+
+    return filtered
 
 async def generate_math_flashcards_from_concepts(concepts: list[dict]):
     all_cards = []

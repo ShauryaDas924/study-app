@@ -20,6 +20,7 @@ from app.services.llm import (
     assign_card_budget,
     generate_flashcards_from_concepts,
     generate_math_flashcards_from_concepts,
+    ground_flashcards_against_lecture,
     flashcards_too_similar,
 )
 
@@ -409,10 +410,23 @@ async def run_concept_extraction_async(
                 flashcards = await generate_flashcards_from_concepts(concept_payloads)
         else:
             flashcards = []
-        
-        print("[concept_job] generated_flashcards=", len(flashcards))
-        print("[concept_job] sample_flashcards=", flashcards[:10])
 
+        print("[concept_job] generated_flashcards_before_grounding=", len(flashcards))
+        print("[concept_job] sample_flashcards_before_grounding=", flashcards[:10])
+
+        # --------------------------------------------------
+        # STEP 7.5: ground flashcard answers to original lecture notes
+        # --------------------------------------------------
+        if flashcards and mode != "math":
+            set_concept_job_status(note_key, {"progress": 86})
+
+            flashcards = await ground_flashcards_against_lecture(
+                note_text=note_text,
+                flashcards=flashcards,
+            )
+
+        print("[concept_job] generated_flashcards_after_grounding=", len(flashcards))
+        print("[concept_job] sample_flashcards_after_grounding=", flashcards[:10])
         # --------------------------------------------------
         # STEP 8: save flashcards quickly
         # --------------------------------------------------
