@@ -215,9 +215,14 @@ async def extract_concepts_deprecated(note_id: UUID):
         await db.flush()
 
         text = f"""
-        {concept.name}
-        {concept.description or ""}
-        {concept.definition or ""}
+        Name: {concept.name}
+        Type: {getattr(concept, "type", "") or ""}
+        Description: {concept.description or ""}
+        Definition: {concept.definition or ""}
+        When to use: {concept.when_to_use or ""}
+        Pitfalls: {concept.pitfalls or ""}
+        Evidence: {concept.evidence or ""}
+        Related concepts: {getattr(concept, "related_concepts", "") or ""}
         """
 
         concept.embedding = embed_text(text)

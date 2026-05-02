@@ -347,7 +347,16 @@ async def top_k_concepts(query: str, concepts: list, k=5):
 
         # AUTO-GENERATE embedding if missing
         if c.embedding is None:
-            text = f"{c.name} {c.description or ''} {c.definition or ''}"
+            text = f"""
+            Name: {c.name}
+            Type: {getattr(c, "type", "") or ""}
+            Description: {c.description or ""}
+            Definition: {c.definition or ""}
+            When to use: {getattr(c, "when_to_use", "") or ""}
+            Pitfalls: {getattr(c, "pitfalls", "") or ""}
+            Evidence: {getattr(c, "evidence", "") or ""}
+            Related concepts: {getattr(c, "related_concepts", "") or ""}
+            """
             c.embedding = await run_in_threadpool(embed_text, text)
 
         cvec = np.array(c.embedding)

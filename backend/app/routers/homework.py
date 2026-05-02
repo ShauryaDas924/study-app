@@ -10,6 +10,8 @@ import base64
 from sqlalchemy.dialects.postgresql import insert
 from app.models import (
     Concept,
+    Note,
+    NoteConcept,
     ChatMemory,
     StudentPitfall,
     Mastery,
@@ -171,6 +173,50 @@ def safe_json_loads(raw: str):
     except Exception:
         return None
 
+def flatten_note_json(content):
+    if content is None:
+        return ""
+
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, dict):
+        parts = [flatten_note_json(v) for v in content.values()]
+        return "\n".join(p for p in parts if p)
+
+    if isinstance(content, list):
+        parts = [flatten_note_json(v) for v in content]
+        return "\n".join(p for p in parts if p)
+
+    return str(content).strip()
+
+
+def extract_final_answer(resp) -> tuple[str, str | None]:
+    """
+    Extracts only the student-facing final answer.
+    Does NOT expose reasoning_content.
+    Returns: (answer, finish_reason)
+    """
+    if not resp or not resp.choices:
+        return "", None
+
+    choice = resp.choices[0]
+    message = choice.message
+    finish_reason = getattr(choice, "finish_reason", None)
+
+    answer = (getattr(message, "content", None) or "").strip()
+
+    if not answer:
+        extra = getattr(message, "model_extra", {}) or {}
+        answer = (
+            extra.get("text")
+            or extra.get("final")
+            or extra.get("answer")
+            or ""
+        ).strip()
+
+    return answer, finish_reason
+
 # ----------------------
 # TEXT QUESTION
 # ----------------------
@@ -220,18 +266,73 @@ async def homework_help(
             [f"{r[0]}: {r[1]}" for r in reversed(history)]
         )
 
-        use_history = (
-            len(body.question) < 500
-            or "continue" in question_lower
-            or "still confused" in question_lower
-            or "as i said" in question_lower
-            or "you said" in question_lower
+        use_history = any(
+            phrase in question_lower
+            for phrase in [
+                "continue",
+                "still confused",
+                "as i said",
+                "you said",
+                "from before",
+                "last step",
+                "previous step",
+                "that step",
+                "my setup",
+                "is this right",
+                "did i do this right",
+                "where did i go wrong"
+            ]
         )
 
         history_text = raw_history_text if use_history else ""
         print("\n📜 Chat History Used for Analysis:")
         print(history_text)
+        # -------- LOAD GROUNDED CONCEPTS FOR ANALYZE MODE --------
+        res = await db.execute(
+            select(Concept).where(
+                Concept.class_id == class_uuid,
+                Concept.user_id == current_user_id
+            )
+        )
 
+        concepts = res.scalars().all()
+
+        scored_concepts = await top_k_concepts(
+            body.question,
+            concepts,
+            k=5
+        )
+
+        MIN_GROUNDING_SCORE = 0.25
+
+        top_concepts = [
+            c for score, c in scored_concepts
+            if score is not None and score >= MIN_GROUNDING_SCORE
+        ]
+
+        concept_context = "\n\n".join([
+            f"""
+        CONCEPT KNOWLEDGE
+
+        Name: {c.name}
+        
+        Definition:
+        {c.definition or c.description or "No definition stored."}
+        
+        When to use:
+        {c.when_to_use or "No when-to-use guidance stored."}
+
+        Common pitfall:
+        {c.pitfalls or "No pitfall stored."}
+
+        Evidence from notes:
+        {c.evidence or "No direct note evidence stored."}
+
+        Confidence:
+        {float(c.confidence or 0.5)}
+        """
+            for c in top_concepts
+        ])[:3000]
         resp = kimi_client.chat.completions.create(
             model="kimi-k2.5",
             messages=[
@@ -239,7 +340,11 @@ async def homework_help(
                     "role": "system",
                     "content": """
     Analyze the student's reasoning in the conversation.
+    Use the provided class concepts and note evidence when available.
 
+    Do not invent a pitfall unless it is supported by the student's conversation or the provided concepts.
+
+    If the evidence is weak, keep the pitfall broad and lower confidence in your wording.
     Return JSON only:
 
     {
@@ -271,9 +376,16 @@ cash_flow_classification
                 },
                 {
                     "role": "user",
-                    "content": history_text
+                    "content": f"""
+                Student conversation:
+                {history_text}
+
+                Relevant class concepts and note evidence:
+                {concept_context}
+                """
                 }
             ],
+            max_tokens=1800,
         )
 
         import json
@@ -333,9 +445,13 @@ Explain this naturally to the student.
                 }
                 
             ],
+            max_tokens=2200,
         )
 
-        natural_answer = natural_resp.choices[0].message.content
+        natural_answer, natural_finish_reason = extract_final_answer(natural_resp)
+
+        if not natural_answer:
+            natural_answer = "The analysis model returned an empty answer. Try asking again with the specific work you want reviewed."
 
         print("\n🗣 NATURAL RESPONSE:")
         print(natural_answer)
@@ -406,12 +522,26 @@ Explain this naturally to the student.
     scored_concepts = await top_k_concepts(
         body.question,
         concepts,
-        k=4
+        k=5
     )
     print(f"⏱ top_k_concepts: {time.perf_counter() - t_topk:.2f}s")
 
     # Separate concepts from scores
-    top_concepts = [c for score, c in scored_concepts]
+    MIN_GROUNDING_SCORE = 0.25
+
+    top_concepts = [
+        c for score, c in scored_concepts
+        if score is not None and score >= MIN_GROUNDING_SCORE
+    ]
+
+    if not top_concepts:
+        return {
+            "help": (
+               "I could not find enough relevant concepts from your uploaded notes for this question. "
+                "Try uploading/extracting more notes, or ask the question with more details from the problem."
+            ),
+            "grounding_confidence": 0.0
+        }
     print("\nTOTAL CONCEPTS IN CLASS:", len(concepts))
 
     missing = sum(1 for c in concepts if c.embedding is None)
@@ -430,17 +560,50 @@ Explain this naturally to the student.
     Name: {c.name}
 
     Definition:
-    {c.definition or c.description}
+    {c.definition or c.description or "No definition stored."}
 
     When to use:
-    {c.when_to_use or "Apply when this concept appears in relevant problems."}
-    
+    {c.when_to_use or "No when-to-use guidance stored."}
+
     Common pitfall:
-    {c.pitfalls or "Students often misapply this concept."}
+    {c.pitfalls or "No pitfall stored."}
+
+    Evidence from notes:
+    {c.evidence or "No direct note evidence stored."}
+
+    Confidence:
+    {float(c.confidence or 0.5)}
     """
         for c in top_concepts
-    ])[:2200]
+    ])[:2500]
+    
+    top_concept_ids = [c.id for c in top_concepts]
 
+    note_res = await db.execute(
+        select(Note)
+        .join(NoteConcept, NoteConcept.note_id == Note.id)
+        .where(
+            Note.user_id == current_user_id,
+            Note.class_id == class_uuid,
+            NoteConcept.concept_id.in_(top_concept_ids)
+        )
+        .limit(5)
+    )
+
+    relevant_notes = note_res.scalars().all()
+    
+    note_context = "\n\n".join([
+        f"""
+    NOTE SOURCE
+
+    Title:
+    {n.title}
+
+    Text:
+    {flatten_note_json(n.content_json)[:800]}
+    """
+        for n in relevant_notes
+    ])[:2500]
     
     # -------- MISCONCEPTION DETECTION (ONLY WHEN NEEDED) --------
     mis = "none"
@@ -552,7 +715,7 @@ Return the single most likely misconception shown by the student.
             ChatMemory.class_id == class_uuid
         )
         .order_by(ChatMemory.created_at.desc())
-        .limit(6)
+        .limit(4)
     )
     print(f"⏱ history query: {time.perf_counter() - t_history:.2f}s")
 
@@ -562,13 +725,23 @@ Return the single most likely misconception shown by the student.
         [f"{r[0]}: {r[1]}" for r in reversed(history)]
     )
 
-    use_history = (
-        len(body.question) < 500
-        or "continue" in question_lower
-        or "still confused" in question_lower
-        or "as i said" in question_lower
-        or "you said" in question_lower
-    )
+    use_history = any(
+        phrase in question_lower
+    for phrase in [
+        "continue",
+        "still confused",
+        "as i said",
+        "you said",
+        "from before",
+        "last step",
+        "previous step",
+        "that step",
+        "my setup",
+        "is this right",
+        "did i do this right",
+        "where did i go wrong"
+    ]
+)
 
     history_text = raw_history_text if use_history else ""
 
@@ -623,405 +796,290 @@ Return the single most likely misconception shown by the student.
 
     is_fm_problem = any(k in question_lower for k in fm_keywords)
     system_prompt = """
+
 You are an elite beginner-first SOA Exam FM tutor.
 
-Your job is to teach FM to a student who may be extremely weak at setup, timelines, recognition, and translating words into math.
+You help students learn actuarial mathematics by teaching the setup, not by dumping formulas.
 
-Assume the student may NOT yet know:
-- how to identify the problem type
-- how to build a timeline
-- how to choose a focal date
-- how to match the rate period to the payment period
-- how to tell what cash flows exist
-- how to tell whether a formula fits
+CRITICAL OUTPUT RULE:
+Return ONLY the polished tutor response that the student should see.
+Do NOT include hidden reasoning.
+Do NOT include analysis notes.
+Do NOT narrate your thinking process.
+Do NOT say “I need to” or “The user is asking”.
+Do NOT expose scratch work.
+Write directly to the student.
 
-Your job is not to sound smart.
-Your job is to make FM finally feel understandable.
+IMPORTANT:
+Do not spend many tokens reasoning internally.
+Think briefly, then write the final tutor answer.
+Your final answer must be placed in message.content.
+Do not put the useful answer only in reasoning_content.
+Keep internal reasoning short.
+
+GROUNDING RULES:
+Use the provided Relevant class concepts as the main source of truth.
+If Relevant note snippets are included, use them only as supporting source material.
+Do not claim something came from the student's notes unless it appears in the provided context.
+You may use basic algebra and arithmetic.
+Class-specific formulas, classifications, definitions, and shortcuts should come from the provided concepts/notes when possible.
+If the concept context is weak or incomplete, say that briefly and still give a careful general setup when the math is standard.
+
+STUDENT PROFILE:
+The student is learning SOA Exam FM.
+Assume they may struggle with:
+- identifying the problem type
+- translating words into cash flows
+- building a timeline
+- choosing the focal date
+- matching rate period to payment period
+- knowing when a formula applies
 
 Student state: __STUDENT_STATE__
 Student mastery: __AVG_MASTERY__
 
-------------------------------------------------
-CORE MISSION
-------------------------------------------------
+CORE TEACHING PIPELINE:
+For FM money-at-time problems, teach in this order:
 
-Teach the student to think in this exact order:
+1. Plain-English story
+2. Cash flows
+3. Timeline
+4. Focal date
+5. Rate/payment-period check
+6. Setup equation
+7. Calculation only when appropriate
 
-1. What is happening in the story?
-2. What cash flows exist?
-3. When do they happen?
-4. What date do we care about?
-5. Do the interest period and payment period match?
-6. What equation represents this?
-7. Only then solve.
+This pipeline matters more than elegance.
 
-The student must learn this pipeline:
+BEGINNER-FIRST RULE:
+Make the setup feel obvious.
+Use short paragraphs.
+Use simple language.
+Do not lead with compact actuarial notation.
+Do not use multiple methods unless the student asks.
+Do not over-explain every algebra detail unless it helps the setup.
 
-words -> story -> cash flows -> timeline -> focal date -> equation -> solve
+TIMELINE RULE:
+For money-at-time problems, include a plain-text fenced timeline before meaningful computation.
 
-Do not skip steps.
-
-------------------------------------------------
-ABSOLUTE BEGINNER PRIORITY
-------------------------------------------------
-
-Always prioritize these in order:
-
-1. plain-English story
-2. identifying cash flows
-3. timeline
-4. focal date
-5. period matching
-6. setup
-7. calculation
-
-If the student does not clearly understand the story or timeline, do NOT move to formulas.
-
-------------------------------------------------
-BEGINNER-FIRST RULE
-------------------------------------------------
-
-Assume confusion unless the student clearly demonstrates structure.
-
-If the student asks a raw FM problem, seems unsure, asks about the timeline, asks which formula to use, or has not shown setup, teach as if they are a beginner.
-
-For beginners:
-- explain in plain English first
-- use short sentences
-- one idea at a time
-- one representation at a time
-- do not jump to shorthand notation
-- do not give multiple methods
-- do not compress reasoning
-
-If a response would impress an instructor but confuse a weak student, it is a bad response.
-
-------------------------------------------------
-WHAT TO DO FIRST ON EVERY FM PROBLEM
-------------------------------------------------
-
-Before using any formula, always do these things:
-
-A. Restate the story in simple words
-B. Identify the cash flows
-C. Show when they happen
-D. Identify the focal date
-E. Check whether the rate period matches the payment period
-F. Only then write a setup equation
-
-Never jump straight into formula substitution.
-
-------------------------------------------------
-TIMELINE TEACHING RULE
-------------------------------------------------
-
-For FM problems involving money at different times, you MUST show a timeline before meaningful computation.
-
-Use a plain-text fenced code block.
-
-Example:
+Use this style:
 
 ```text
-Time:        0      1      2      3
-             |------|------|------|
-Cash flows:  1000   -      -      -
-Value date:                      *
+Time:        0      1      2      ...      n
+             |------|------|------|--------|
+Cash flows:  ...
+Value date:  *
+```
 
-Label clearly:
-    •    what happens at time 0
-    •    when the first payment occurs
-    •    when the last payment occurs
-    •    where the value date is
-    •    whether payments are beginning or end of period
-    •    any rate changes
+Label the key dates clearly.
 
-If the student is weak at timelines, slow down and explain each mark on the timeline.
-
-⸻
-
-PLAIN-ENGLISH STORY RULE
-
-Before formal math, explain the problem as a money story.
-
-Examples of good beginner phrasing:
-    •    “Money starts here.”
-    •    “This payment happens at the end of each year.”
-    •    “All of these amounts must be compared at the same date.”
-    •    “This deposit grows forward to year 10.”
-    •    “This payment is discounted back to time 0.”
-
-Examples of bad beginner phrasing:
-    •    “This is a varying annuity-immediate.”
-    •    “Use the arithmetic accumulation formula.”
-    •    “Apply the standard identity.”
-
-Formal terms may be introduced later, but only after the student understands the story.
-
-⸻
-
-NOTATION DELAY RULE
-
-Do NOT introduce compact actuarial notation too early.
-
-Unless the student is clearly strong or explicitly asks for formal notation:
-    •    do not use increasing/decreasing annuity shortcuts
-    •    do not use advanced annuity symbols prematurely
-    •    do not use multiple equivalent formulas
-    •    do not use notation just because it is shorter
-
-For weak students, prefer:
-plain English -> timeline -> explicit cash-flow sum -> formula name later
-
-Explicit sums are better than compressed formulas when the student is confused.
-
-⸻
-
-ONE-REPRESENTATION RULE
-
-At each teaching step, use only one main representation:
-    •    plain English
-    •    timeline
-    •    explicit cash-flow list
-    •    equation
-    •    compact notation
-
-Do NOT switch across multiple representations in one response unless the student is stable.
-
-For beginners, prefer:
-plain English -> timeline -> explicit sum
-
-⸻
-
-FOCAL DATE RULE
-
-Always identify the focal date clearly.
-
-Say it in plain English, like:
-    •    “We want the value at time 0.”
-    •    “We want the accumulated value at the end of year 10.”
-    •    “So every cash flow must be moved to year 10.”
-
-If the student seems lost, repeat the focal date before writing the equation.
-
-⸻
-
-RATE MATCHING RULE
-
-Always check whether the interest period matches the cash-flow period.
-
-Explain this plainly.
+FOCAL DATE RULE:
+Always identify the date we care about in plain English.
 
 Examples:
-    •    “The payments are yearly, and the rate is annual effective, so they already match.”
-    •    “The payments are monthly, but the rate is annual, so we need a monthly rate first.”
 
+* “We want the value at time 14 because year 15 starts at time 14.”
+* “We value the bond right after the coupon date.”
+* “All cash flows must be compared at the same date.”
+
+RATE CHECK RULE:
+Always check whether the coupon/payment period matches the yield period.
 Never silently use a mismatched rate.
 
-⸻
+BOND RULES:
+For bond problems, clearly distinguish:
 
-PROBLEM RECOGNITION RULE
+* coupon amount
+* yield rate per coupon period
+* book value
+* redemption value
+* premium or discount
+* amortization of premium
+* accumulation of discount
 
-When useful, briefly identify the problem type, but only after explaining the story.
+For discount bonds:
+Accumulation of discount during a period = interest earned on book value - coupon.
 
-Possible FM types include:
-    •    single payment
-    •    present value / future value
-    •    annuity-immediate
-    •    annuity-due
-    •    deferred annuity
-    •    amortization
-    •    sinking fund
-    •    bond
-    •    yield / equation of value
-    •    replacement of payments
-    •    varying cash flow
-    •    spot / forward rate
-    •    duration / immunization
+For premium bonds:
+Amortization of premium during a period = coupon - interest earned on book value.
 
-But for weak students, do NOT lead with category names alone.
-Lead with what is happening.
+MULTI-PART PROBLEM RULE:
+If the question has parts (a), (b), (c), handle them separately.
+Use headings like:
 
-⸻
+Part (a)
 
-SOCRATIC RULE
+Part (b)
 
-For weak students, do not ask broad open-ended questions.
+Do not mix the timelines or formulas across parts.
 
-Bad:
-    •    “What do you think?”
-    •    “Can you solve this?”
-    •    “Any ideas?”
+RESPONSE MODE POLICY:
+Default mode is TEACHING MODE unless the student explicitly asks for a full solution.
 
-Good:
-    •    “At what time does the first payment happen?”
-    •    “Are we valuing everything at time 0 or time 10?”
-    •    “Does this cash flow move forward or backward?”
-    •    “How many years does the first deposit grow?”
-    •    “Is this payment at the beginning or end of the year?”
+TEACHING MODE:
+Use this when the student asks a raw homework problem, asks for help, asks "how do I do this?", asks for a hint, asks for next step, or sends a problem without explicitly requesting the final answer.
 
-Ask only one focused question at a time.
+In teaching mode:
+* do NOT calculate the final answer
+* do NOT finish all parts
+* teach the story
+* identify cash flows
+* draw the timeline
+* identify the focal date
+* check the rate period
+* write only the first useful setup equation
+* explain why that setup is correct
+* end with ONE small check question
 
-⸻
+FULL SOLUTION MODE:
+Use this only when the student explicitly says:
+"solve this fully", "full solution", "give final answer", "answer all parts", "calculate all", "complete solution", or similar.
 
-CONFUSED-STUDENT SAFETY RULE
+In full solution mode:
+* show the setup
+* compute the final answer
+* briefly explain why the answer makes sense
 
-If student_state = confused, or the student shows no setup skill yet:
+IMPORTANT:
+The words "find", "find the amount", "find the value", or "find the premium" are part of normal homework wording. They do NOT by themselves mean the student wants a full solution.
 
-You MUST teach at the lowest useful level.
+CONFUSED STUDENT RULE:
+If student_state = confused:
 
-In confused mode, do NOT:
-    •    introduce advanced notation
-    •    give multiple methods
-    •    jump to shortcut formulas
-    •    compress several reasoning steps together
-    •    end by saying “now calculate it” if the student still does not understand the setup
+* use shorter sentences
+* one idea at a time
+* no multiple methods
+* no shortcut-first explanation
+* end with one tiny check question
 
-Instead, always do this:
-    1.    restate the story
-    2.    identify the cash flows
-    3.    build the timeline slowly
-    4.    identify the focal date
-    5.    write only the next setup step
-    6.    explain why that step makes sense
-    7.    ask one tiny check question
+STYLE:
+Calm.
+Clear.
+Direct.
+Beginner-safe.
+Not robotic.
+Not textbook-like.
+No excessive praise.
+No tables.
 
-The goal is for the next step to feel obvious.
+MATH FORMAT:
+Use Markdown.
+Use LaTeX for math.
 
-⸻
+Inline math: $…$
+Display math:
 
-HARD STOP POLICY
+$$
+…
+$$
 
-Unless the student explicitly asks for the full solution, do NOT fully solve the entire problem.
+Use plain-text fenced code blocks only for timelines.
 
-Default behavior:
-    1.    explain the story
-    2.    show the timeline
-    3.    identify the focal date
-    4.    do only the first useful setup step
-    5.    stop
-    6.    ask one small check question
-
-If the student explicitly says:
-    •    solve it
-    •    give the full solution
-    •    finish it
-    •    just do it
-
-then you may give the full solution.
-
-⸻
-
-COMMON BEGINNER FM MISTAKES TO WATCH FOR
-
-Actively watch for and correct these:
-    •    not knowing what the cash flows are
-    •    not knowing when each cash flow happens
-    •    drawing no timeline
-    •    wrong first payment timing
-    •    beginning vs end confusion
-    •    wrong focal date
-    •    present value vs accumulated value confusion
-    •    rate period mismatch
-    •    using a formula before understanding the setup
-    •    moving values to inconsistent dates
-    •    answering the wrong question
-
-If one of these appears, name it simply and fix it simply.
-
-⸻
-
-TEACHING STYLE
-
-Your tone should be:
-    •    calm
-    •    clear
-    •    direct
-    •    patient
-    •    intelligent
-    •    never robotic
-    •    never showy
-    •    never lecture-like
-
-Use short paragraphs.
-Use simple words.
-Avoid filler.
-
-Do not praise excessively.
-Do not sound like a textbook.
-Do not sound like a report.
-
-⸻
-
-OUTPUT FORMAT
-
-Use clean Markdown.
-
+DEFAULT RESPONSE STRUCTURE:
 Use these headings when helpful:
-    •    Story
-    •    Cash Flows
-    •    Timeline
-    •    Focal Date
-    •    Rate Check
-    •    First Step
-    •    Why
-    •    Your Turn
 
-For timelines, use fenced plain-text code blocks only.
-
-For formulas:
-    •    inline math: $…$
-    •    display math: $$…$$
-
-Do not use tables.
-
-⸻
-
-DEFAULT RESPONSE BLUEPRINT
-
-For a weak or beginner student, use this structure:
+Part (a)
 
 Story
-    •    explain what is happening in plain English
-
 Cash Flows
-    •    identify what money appears and where
-
 Timeline
-    •    draw the timeline simply
-
 Focal Date
-    •    say what date we care about
-
 Rate Check
-    •    say whether the rate matches the payment spacing
+Setup
+Calculation
+Answer
 
-First Step
-    •    do only the first setup step
+Part (b)
 
-Why
-    •    explain why that step is correct in simple language
+Story
+Cash Flows
+Timeline
+Focal Date
+Rate Check
+Setup
+Calculation
+Answer
 
-Your Turn
-    •    ask one very small, concrete question
+FINAL CHECK BEFORE RESPONDING:
+Before sending, make sure the response:
 
-⸻
-
-FINAL GOAL
-
-The student should leave understanding:
-    •    what is happening
-    •    what the timeline means
-    •    what date matters
-    •    what equation should be written
-    •    why that setup is correct
-
-Do not optimize for elegance.
-Optimize for beginner clarity, transfer, and confidence in setup.
+* does not reveal scratch reasoning
+* does not talk about “the user”
+* does not include hidden analysis
+* directly teaches the student
+* has clean Markdown
+* gives either a clear next step or a final answer, depending on the request
 """
 
 
     system_prompt = system_prompt.replace("__STUDENT_STATE__", str(student_state))
     system_prompt = system_prompt.replace("__AVG_MASTERY__", str(avg_mastery))
+
+    should_include_notes = any(
+        phrase in question_lower
+        for phrase in [
+            "based on my notes",
+            "from the notes",
+            "according to the notes",
+            "what did my notes say",
+            "use my notes",
+            "what concept",
+            "which formula",
+            "why",
+            "explain",
+            "definition",
+            "where does this come from"
+        ]
+    )
+
+    wants_full_solution = any(
+        phrase in question_lower
+        for phrase in [
+            "solve it",
+            "solve this",
+            "solve this question",
+            "full solution",
+            "finish it",
+            "give final answer",
+            "calculate all",
+            "do the whole problem",
+            "complete solution",
+            "fully solve",
+            "answer all parts",
+            "show full solution",
+            "step by step answer",
+        ]
+    )
+
+    max_output_tokens = 6000 if wants_full_solution else 3500
+    response_mode = "FULL_SOLUTION" if wants_full_solution else "TEACHING_MODE"
+    user_context = f"""
+Response mode:
+{response_mode}
+
+Student question:
+{body.question}
+
+Detected misconception:
+{mis}
+
+Relevant class concepts:
+{context}
+    """
+
+    if history_text.strip():
+        user_context += f"""
+
+    Recent chat history:
+    {history_text}
+    """
+
+    if should_include_notes and note_context.strip():
+        user_context += f"""
+
+    Relevant note snippets:
+    {note_context}
+    """
 
     # 2) LLM call
     t_tutor = time.perf_counter()
@@ -1034,26 +1092,89 @@ Optimize for beginner clarity, transfer, and confidence in setup.
             },
             {
                 "role": "user",
-                "content": f"""
+                "content": user_context
+            }
+        ],
+        
+        max_tokens=max_output_tokens,
+    )
+
+    answer, finish_reason = extract_final_answer(resp)
+
+    print("\n===== KIMI RESPONSE DEBUG =====")
+    print("finish_reason:", finish_reason)
+    print("answer_preview:", repr(answer[:500]))
+    print("answer_length:", len(answer))
+
+    # Retry once if Kimi used all tokens in reasoning_content and returned blank content.
+    if not answer:
+        print("⚠️ Empty Kimi content. Retrying with final-answer-only prompt...")
+
+        retry_resp = kimi_client.chat.completions.create(
+            model="kimi-k2.5",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+You are an SOA Exam FM tutor.
+
+Return ONLY the final student-facing answer.
+Do not include hidden reasoning.
+Do not include analysis notes.
+Do not narrate your thought process.
+Do not say "the user".
+Use clean Markdown.
+Be clear, beginner-friendly, and direct.
+
+For money-at-time problems:
+1. Story
+2. Cash flows
+3. Timeline
+4. Focal date
+5. Rate check
+6. Setup
+7. Calculation
+8. Answer
+    """
+                },
+                {
+                    "role": "user",
+                    "content": f"""
+Solve this question for the student.
+
 Student question:
 {body.question}
 
-Recent chat history:
-{history_text}
-
-Detected misconception:
-{mis}
-
 Relevant class concepts:
 {context}
-"""
-        }
-    ],
-)
+    """
+                }
+            ],
+            max_tokens=4000,
+        )
 
-    answer = resp.choices[0].message.content
+        answer, retry_finish_reason = extract_final_answer(retry_resp)
+    
+        print("\n===== KIMI RETRY DEBUG =====")
+        print("retry_finish_reason:", retry_finish_reason)
+        print("retry_answer_preview:", repr(answer[:500]))
+        print("retry_answer_length:", len(answer))
+
+    if not answer:
+        answer = (
+            "The tutor model returned an empty final answer twice. "
+            "Try again, or split the problem into part (a) and part (b)."
+        )
+
     print(f"⏱ tutor call: {time.perf_counter() - t_tutor:.2f}s")
     print(f"⏱ total /help: {time.perf_counter() - t0:.2f}s")
+    grounding_confidence = 0.0
+
+    if scored_concepts:
+        grounding_confidence = round(
+            sum(float(score) for score, _ in scored_concepts[:5]) / min(len(scored_concepts), 5),
+            3
+        )
     # -------- SAVE ASSISTANT MESSAGE --------
     db.add(ChatMemory(
         user_id=current_user_id,
@@ -1066,7 +1187,19 @@ Relevant class concepts:
 
     return {
         "help": answer,
-        "grounding_confidence": None
+        "answer": answer,
+        "response": answer,
+        "message": answer,
+        "grounding_confidence": grounding_confidence,
+        "grounded_concepts": [
+            {
+                "name": c.name,
+                "score": round(float(score), 3),
+                "has_evidence": bool(c.evidence),
+                "confidence": float(c.confidence or 0.5)
+            }
+            for score, c in scored_concepts[:5]
+        ]
     }
 
 
@@ -1225,15 +1358,46 @@ async def review_student_work(
     concepts = res.scalars().all()
     mime_type = "application/pdf" if (file.filename or "").lower().endswith(".pdf") else "image/png"
     # -------- RETRIEVE RELEVANT CONCEPTS --------
-    query = "student handwritten math solution"
+    content = await file.read()
+
+    try:
+        extracted_text = await extract_text(file.filename, content)
+        extracted_text = clean_extracted_text(extracted_text)
+    except Exception:
+        extracted_text = ""
+
+    retrieval_query = f"""
+    Student uploaded work review.
+
+    Extracted text:
+    {extracted_text[:3000]}
+
+    Task:
+    Review the student's reasoning and match it to relevant class concepts.
+    """
 
     scored_concepts = await top_k_concepts(
-        query,
+        retrieval_query,
         concepts,
         k=4
     )
 
-    top_concepts = [c for score, c in scored_concepts]
+    MIN_GROUNDING_SCORE = 0.25
+
+    top_concepts = [
+        c for score, c in scored_concepts
+        if score is not None and score >= MIN_GROUNDING_SCORE
+    ]
+
+    if not top_concepts:
+        return {
+            "review": (
+                "I could not find enough relevant concepts from your uploaded notes to review this work reliably. "
+                "Upload or extract notes for this topic first, or include more of the problem statement."
+            ),
+            "grounding_confidence": 0.0,
+            "grounded_concepts": []
+        }
 
     print("\n===== REVIEW CONCEPT RETRIEVAL =====")
 
@@ -1242,7 +1406,7 @@ async def review_student_work(
         print(f"Score: {round(score,4)}")
         print(f"Name: {c.name}")
 
-    content = await file.read()
+    
 
     import base64
     img_b64 = base64.b64encode(content).decode()
@@ -1250,15 +1414,27 @@ async def review_student_work(
     # -------- BUILD CONCEPT CONTEXT --------
     context = "\n\n".join([
         f"""
-CONCEPT KNOWLEDGE
+    CONCEPT KNOWLEDGE
 
-Name: {c.name}
-Definition: {c.definition or c.description}
-When to use: {c.when_to_use or "Apply when this concept appears in relevant problems."}
-Common pitfall: {c.pitfalls or "Students often misapply this concept."}
-"""
+    Name: {c.name}
+    
+    Definition:
+    {c.definition or c.description or "No definition stored."}
+
+    When to use:
+    {c.when_to_use or "No when-to-use guidance stored."}
+    
+    Common pitfall:
+    {c.pitfalls or "No pitfall stored."}
+
+    Evidence from notes:
+    {c.evidence or "No direct note evidence stored."}
+
+    Confidence:
+    {float(c.confidence or 0.5)}
+    """
         for c in top_concepts
-    ])[:2200]
+    ])[:3000]
 
     resp = kimi_client.chat.completions.create(
         model="kimi-k2.5",
@@ -1271,6 +1447,17 @@ Common pitfall: {c.pitfalls or "Students often misapply this concept."}
             Relevant class concepts:
 
             {context}
+            GROUNDING RULES:
+
+            Use the provided Relevant class concepts as your main source of truth.
+
+            If the relevant concepts/evidence do not support a claim, do not pretend the claim came from the student's notes.
+
+            You may use basic algebra and arithmetic, but class-specific formulas, definitions, classifications, and shortcuts must come from the provided concepts.
+
+            If the uploaded work is unclear or the concept context is insufficient, say that clearly instead of giving a confident ungrounded review.
+
+            When you reference a concept, use its concept name naturally.
 
             When analyzing the student's work:
             • Identify which concept the student is trying to apply
@@ -1424,10 +1611,37 @@ Equations: $$...$$
                 ]
             }
         ],
+        max_tokens=3000,
     )
 
+    grounding_confidence = 0.0
+
+    if scored_concepts:
+        grounding_confidence = round(
+            sum(float(score) for score, _ in scored_concepts[:4]) / min(len(scored_concepts), 4),
+            3
+        )
+
+    review_answer, review_finish_reason = extract_final_answer(resp)
+
+    if not review_answer:
+        review_answer = (
+            "The review model returned an empty final answer. "
+            "Try uploading a clearer image or splitting the work into a smaller section."
+        )
+
     return {
-        "review": resp.choices[0].message.content
+        "review": review_answer,
+        "grounding_confidence": grounding_confidence,
+        "grounded_concepts": [
+            {
+                "name": c.name,
+                "score": round(float(score), 3),
+                "has_evidence": bool(c.evidence),
+                "confidence": float(c.confidence or 0.5)
+            }
+            for score, c in scored_concepts[:4]
+        ]
     }
 
 @router.post("/step-check")
@@ -1460,24 +1674,74 @@ async def step_check(
     mime_type = "application/pdf" if session.source_type == "pdf" else "image/png"
     retrieval_query = f"""
     Student uploaded work.
-    User prompt: {body.user_prompt}
-    Selected step: {body.selected_step or ""}
-    Action: {body.action}
+
+    User prompt:
+    {body.user_prompt}
+
+    Selected step:
+    {body.selected_step or ""}
+
+    Requested action:
+    {body.action}
+
+    Extracted text from upload:
+    {session.extracted_text[:3000] if session.extracted_text else ""}
     """
 
-    scored_concepts = await top_k_concepts(retrieval_query, concepts, k=4)
-    top_concepts = [c for score, c in scored_concepts]
+    scored_concepts = await top_k_concepts(
+        retrieval_query,
+        concepts,
+        k=4
+    )
+
+    MIN_GROUNDING_SCORE = 0.25
+
+    top_concepts = [
+        c for score, c in scored_concepts
+        if score is not None and score >= MIN_GROUNDING_SCORE
+    ]
+
+    if not top_concepts:
+        return {
+            "step_verdict": None,
+            "concept_name": None,
+            "correct_parts": [],
+            "issues": [
+                "I could not find enough relevant grounded concepts from your uploaded notes for this step."
+            ],
+            "next_step": "Upload or extract notes for this topic, or give more problem context.",
+            "next_time_rule": "Do not rely on the tutor's feedback unless the system found matching class concepts.",
+            "pitfall_tag": "missing_grounding",
+            "confidence": 0.0,
+            "response_markdown": (
+                "I do not have enough grounded class-note context to check this step reliably yet. "
+                "Upload/extract the relevant notes or include more of the problem statement."
+            )
+        }
 
     context = "\n\n".join([
         f"""
-CONCEPT KNOWLEDGE
-Name: {c.name}
-Definition: {c.definition or c.description}
-When to use: {c.when_to_use or "Apply when this concept appears in relevant problems."}
-Common pitfall: {c.pitfalls or "Students often misapply this concept."}
-"""
+    CONCEPT KNOWLEDGE
+
+    Name: {c.name}
+
+    Definition:
+    {c.definition or c.description or "No definition stored."}
+
+    When to use:
+    {c.when_to_use or "No when-to-use guidance stored."}
+
+    Common pitfall:
+    {c.pitfalls or "No pitfall stored."}
+
+    Evidence from notes:
+    {c.evidence or "No direct note evidence stored."}
+
+    Confidence:
+    {float(c.confidence or 0.5)}
+    """
         for c in top_concepts
-    ])[:2500]
+    ])[:3000]
 
     structured_resp = kimi_client.chat.completions.create(
         model="kimi-k2.5",
@@ -1491,6 +1755,18 @@ You are reviewing a student's uploaded work and helping at a specific step.
 
 Relevant concepts:
 {context}
+
+GROUNDING RULES:
+
+Use the provided Relevant concepts as the main source of truth.
+
+If the selected step cannot be checked from the uploaded work and the provided concepts, lower confidence and say what information is missing.
+
+Do not invent a class-specific rule, formula, or shortcut unless it appears in the concept context.
+
+You may use basic algebra/arithmetic, but concept classification must come from the grounded concepts.
+
+If no concept clearly applies, set concept_name to null and confidence below 0.4.
 
 Return JSON only.
 
@@ -1550,10 +1826,11 @@ Extracted text from upload:
                 ]
             }
         ],
-        temperature=0.2,
+        max_tokens=2000,
+        
     )
 
-    raw_structured = structured_resp.choices[0].message.content
+    raw_structured, structured_finish_reason = extract_final_answer(structured_resp)
     parsed = safe_json_loads(raw_structured)
 
     if not parsed:
@@ -1605,10 +1882,16 @@ Structured review:
 """
             }
         ],
-        temperature=0.3,
+        max_tokens=2500,
     )
 
-    response_markdown = natural_resp.choices[0].message.content
+    response_markdown, natural_finish_reason = extract_final_answer(natural_resp)
+
+    if not response_markdown:
+        response_markdown = (
+            "The step-check model returned an empty final answer. "
+            "Try restating the selected step more specifically."
+        )
 
     review_row = StepReview(
         user_id=current_user_id,
@@ -1669,7 +1952,23 @@ Structured review:
         "next_time_rule": parsed.get("next_time_rule"),
         "pitfall_tag": parsed.get("pitfall_tag"),
         "confidence": parsed.get("confidence"),
-        "response_markdown": response_markdown
+        "response_markdown": response_markdown,
+        "grounding_confidence": (
+            round(
+                sum(float(score) for score, _ in scored_concepts[:4]) / min(len(scored_concepts), 4),
+                3
+            )
+            if scored_concepts else 0.0
+        ),
+        "grounded_concepts": [
+            {
+                "name": c.name,
+                "score": round(float(score), 3),
+                "has_evidence": bool(c.evidence),
+                "confidence": float(c.confidence or 0.5)
+            }
+            for score, c in scored_concepts[:4]
+        ]
     }
   
 @router.get("/step-review-history/{session_id}")
