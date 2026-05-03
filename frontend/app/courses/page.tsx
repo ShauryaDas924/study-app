@@ -4,8 +4,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useStore } from "@/store/useStore";
 import { useState } from "react";
+import RequireAuth from "@/components/RequireAuth";
 
-export default function ClassesPage() {
+function ClassesContent() {
   const qc = useQueryClient();
   const setClass = useStore((s) => s.setSelectedClassId);
   const selected = useStore((s) => s.selectedClassId);
@@ -75,5 +76,13 @@ style={
         ))}
       </div>
     </div>
+  );
+}
+
+export default function ClassesPage() {
+  return (
+    <RequireAuth>
+      <ClassesContent />
+    </RequireAuth>
   );
 }

@@ -6,12 +6,15 @@ import { useStore } from "@/store/useStore";
 import { Card, CardHeader } from "@/components/ui/Card";
 import MasteryCard from "@/components/MasteryCard";
 import { Button } from "@/components/ui/Button";
-export default function DashboardPage() {
+import RequireAuth from "@/components/RequireAuth";
+
+function DashboardContent() {
   const classId = useStore((s) => s.selectedClassId);
 
   const readinessQ = useQuery({
     queryKey: ["readiness", classId],
     queryFn: () => api.readiness(classId),
+    enabled: Boolean(classId),
   });
 
   const readiness = readinessQ.data?.readiness_percent ?? 0;
@@ -79,5 +82,13 @@ export default function DashboardPage() {
         ))}
       </div>
     </div>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <RequireAuth>
+      <DashboardContent />
+    </RequireAuth>
   );
 }

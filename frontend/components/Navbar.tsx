@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import ClassSelector from "@/components/ClassSelector";
 import { api } from "@/lib/api";
+import { supabase } from "@/lib/supabaseClient";
 
 const items = [
   { href: "/dashboard", label: "Dashboard" },
@@ -166,6 +167,13 @@ function GlobalExtractionProgress() {
 
 export default function Navbar() {
   const path = usePathname();
+  const router = useRouter();
+  const isLogin = path === "/login";
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  }
 
   return (
     <header
@@ -198,7 +206,7 @@ export default function Navbar() {
           </div>
         </div>
 
-        <nav className="hidden md:flex items-center gap-1">
+        {!isLogin && <nav className="hidden md:flex items-center gap-1">
           {items.map((it) => {
             const active = path?.startsWith(it.href);
 
@@ -223,22 +231,37 @@ export default function Navbar() {
               </Link>
             );
           })}
-        </nav>
+        </nav>}
 
-        <div className="hidden lg:block">
+        {!isLogin && <div className="hidden lg:block">
           <GlobalExtractionProgress />
-        </div>
+        </div>}
 
-        <div className="w-[220px]">
-          <ClassSelector />
-        </div>
+        {!isLogin && (
+          <div className="flex w-[300px] items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <ClassSelector />
+            </div>
+            <button
+              className="rounded-xl border px-3 py-2 text-sm transition"
+              style={{
+                background: "rgba(255,255,255,0.68)",
+                borderColor: "var(--border-soft)",
+                color: "var(--text-soft)",
+              }}
+              onClick={handleLogout}
+            >
+              Logout
+            </button>
+          </div>
+        )}
       </div>
 
-      <div className="lg:hidden px-5 pb-3">
+      {!isLogin && <div className="lg:hidden px-5 pb-3">
         <GlobalExtractionProgress />
-      </div>
+      </div>}
 
-      <div className="md:hidden px-5 pb-3 flex flex-wrap gap-2">
+      {!isLogin && <div className="md:hidden px-5 pb-3 flex flex-wrap gap-2">
         {items.map((it) => {
           const active = path?.startsWith(it.href);
 
@@ -266,7 +289,7 @@ export default function Navbar() {
             </Link>
           );
         })}
-      </div>
+      </div>}
     </header>
   );
 }

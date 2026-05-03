@@ -653,6 +653,12 @@ async def get_flashcard_session(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id)
 ):
+    note_res = await db.execute(
+        select(Note.id).where(Note.id == note_id, Note.user_id == user_id)
+    )
+    if not note_res.scalar_one_or_none():
+        raise HTTPException(404, "Note not found")
+
     session = await db.get(
         FlashcardSession,
         {"user_id": user_id, "note_id": note_id}
@@ -695,6 +701,12 @@ async def update_flashcard_session(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id)
 ):
+    note_res = await db.execute(
+        select(Note.id).where(Note.id == note_id, Note.user_id == user_id)
+    )
+    if not note_res.scalar_one_or_none():
+        raise HTTPException(404, "Note not found")
+
     stmt = insert(FlashcardSession).values(
         user_id=user_id,
         note_id=note_id,
@@ -730,6 +742,12 @@ async def clear_flashcard_session(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id)
 ):
+    note_res = await db.execute(
+        select(Note.id).where(Note.id == note_id, Note.user_id == user_id)
+    )
+    if not note_res.scalar_one_or_none():
+        raise HTTPException(404, "Note not found")
+
     session = await db.get(
         FlashcardSession,
         {"user_id": user_id, "note_id": note_id}

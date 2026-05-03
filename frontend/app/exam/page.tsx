@@ -3,8 +3,9 @@
 import { Card, CardHeader } from "@/components/ui/Card";
 import ExamSetup from "@/components/ExamSetup";
 import ExamRunner from "@/components/ExamRunner";
+import RequireAuth from "@/components/RequireAuth";
 
-export default function ExamPage() {
+function ExamContent() {
   return (
    <div className="app-shell py-7 space-y-6">
       <div>
@@ -26,5 +27,13 @@ export default function ExamPage() {
 
       <ExamRunner />
     </div>
+  );
+}
+
+export default function ExamPage() {
+  return (
+    <RequireAuth>
+      <ExamContent />
+    </RequireAuth>
   );
 }

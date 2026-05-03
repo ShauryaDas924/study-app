@@ -1,5 +1,5 @@
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -55,6 +55,12 @@ async def clear_class_data(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
+    class_res = await db.execute(
+        select(Class.id).where(Class.id == class_id, Class.user_id == user_id)
+    )
+    if not class_res.scalar_one_or_none():
+        raise HTTPException(404, "Class not found")
+
     # -----------------------------
     # 0. Get concept IDs
     # -----------------------------
