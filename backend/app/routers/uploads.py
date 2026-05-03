@@ -1,7 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, Form, Depends, BackgroundTasks, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
-from app.services.llm import refine_notes
+
 from app.services.file_extraction import extract_text
 from app.services.auth import get_current_user_id
 from app.jobs.concept_jobs import concept_extraction_job
@@ -60,14 +60,15 @@ async def upload_note(
         },
     )
 
-    with StepTimer("refine_notes", {"filename": file.filename, "raw_chars": len(raw_text or "")}):
-        text = await refine_notes(raw_text)
+    with StepTimer("prepare_note_text_no_llm", {"filename": file.filename, "raw_chars": len(raw_text or "")}):
+        text = raw_text
 
     print(
-        "[upload_note] refined_text_summary",
+        "[upload_note] prepared_text_summary",
         {
             "filename": file.filename,
-            "refined_chars": len(text or ""),
+            "text_chars": len(text or ""),
+            "strategy": "raw_text_saved_refinement_runs_in_background_job",
         },
     )
 

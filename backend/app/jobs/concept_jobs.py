@@ -14,6 +14,7 @@ from app.models import (
 )
 from app.services.llm import (
     embed_text,
+    refine_notes,
     extract_concepts_from_note,
     extract_math_concepts_from_note,
     classify_concept_role,
@@ -192,6 +193,36 @@ async def run_concept_extraction_async(
                 },
             )
             return
+        
+        # --------------------------------------------------
+        # STEP 1.5: refine notes in background, not upload request
+        # --------------------------------------------------
+        set_concept_job_status(note_key, {"progress": 10})
+
+        with StepTimer("refine_notes_background", note_key, {"raw_chars": len(note_text or "")}):
+            refined_note_text = await refine_notes(note_text)
+
+        print(
+            "[concept_job] refine_notes_background_summary",
+            {
+                "note_id": note_key,
+                "raw_chars": len(note_text or ""),
+                "refined_chars": len(refined_note_text or ""),
+            },
+        )
+
+        if refined_note_text and refined_note_text.strip():
+            note_text = refined_note_text
+
+            async with AsyncSessionLocal() as db:
+                res = await db.execute(
+                    select(Note).where(Note.id == note_id, Note.user_id == user_id)
+                )
+                note = res.scalar_one_or_none()
+                if note:
+                    note.content_json = {"text": note_text}
+                    await db.commit()
+        
 
         # --------------------------------------------------
         # STEP 2: LLM concept extraction with NO DB open

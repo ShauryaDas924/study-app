@@ -37,6 +37,37 @@ export default function NotesPage() {
     enabled: !!classId,
   });
 
+useEffect(() => {
+  if (!classId) return;
+  if (!notesQ.data?.length) return;
+  if (selectedNoteId) return;
+
+  const raw = localStorage.getItem("activeExtractionMeta");
+
+  if (raw) {
+    try {
+      const meta = JSON.parse(raw);
+
+      if (
+        meta?.classId === classId &&
+        meta?.noteId &&
+        notesQ.data.some((n: any) => n.id === meta.noteId)
+      ) {
+        setSelectedNoteId(meta.noteId);
+        return;
+      }
+    } catch {
+      localStorage.removeItem("activeExtractionMeta");
+      localStorage.removeItem("activeExtractionNoteId");
+    }
+  }
+
+  const latestNote = notesQ.data[0];
+  if (latestNote?.id) {
+    setSelectedNoteId(latestNote.id);
+  }
+}, [classId, notesQ.data, selectedNoteId]);
+
   /* ===============================
      SINGLE NOTE QUERY
   =============================== */
@@ -72,6 +103,14 @@ useEffect(() => {
     qc.invalidateQueries({ queryKey: ["note", selectedNoteId] });
     fetchConcepts();
     fetchDBFlashcards();
+
+    localStorage.removeItem("activeExtractionMeta");
+    localStorage.removeItem("activeExtractionNoteId");
+  }
+
+  if (status === "failed") {
+    localStorage.removeItem("activeExtractionMeta");
+    localStorage.removeItem("activeExtractionNoteId");
   }
 }, [extractionStatusQ.data?.status, classId, qc, selectedNoteId]);
   /* ===============================

@@ -5,6 +5,7 @@ import re
 import os, json
 import asyncio
 import pathlib
+import hashlib
 from openai import OpenAI
 import numpy as np
 from starlette.concurrency import run_in_threadpool
@@ -455,24 +456,73 @@ NAMED_PATTERN = re.compile(
 )
 
 async def refine_notes(note_text: str):
+    raw_text = note_text or ""
+
+    text_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+
+    cache_dir = pathlib.Path(".cache/refined_notes")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    cache_path = cache_dir / f"{text_hash}.txt"
+
+    if cache_path.exists():
+        cached = cache_path.read_text(encoding="utf-8")
+        print(
+            "[refine_notes] cache_hit",
+            {
+                "raw_chars": len(raw_text),
+                "cached_chars": len(cached),
+                "hash": text_hash[:12],
+            },
+        )
+        return cached
 
     resp = await kimi_chat_create(
         model="kimi-k2.5",
         messages=[
-            {"role":"system","content":NOTES_REFINEMENT_PROMPT},
-            {"role":"user","content":note_text}
+            {"role": "system", "content": NOTES_REFINEMENT_PROMPT},
+            {"role": "user", "content": raw_text},
         ],
-        
     )
 
     raw = resp.choices[0].message.content
-
     parsed = safe_json_loads(raw)
 
     if not parsed:
-        return note_text
+        cache_path.write_text(raw_text, encoding="utf-8")
+        return raw_text
 
-    return parsed.get("clean_notes", note_text)
+    clean_notes = parsed.get("clean_notes", raw_text)
+
+    original_len = len(raw_text)
+    refined_len = len(clean_notes or "")
+    retention_ratio = refined_len / max(original_len, 1)
+
+    print(
+        "[refine_notes] coverage_check",
+        {
+            "original_chars": original_len,
+            "refined_chars": refined_len,
+            "retention_ratio": round(retention_ratio, 3),
+            "hash": text_hash[:12],
+        },
+    )
+
+    if original_len >= 5000 and retention_ratio < 0.80:
+        print(
+            "[refine_notes] rejected_refinement_too_compressed",
+            {
+                "original_chars": original_len,
+                "refined_chars": refined_len,
+                "minimum_required_chars": int(original_len * 0.80),
+                "hash": text_hash[:12],
+            },
+        )
+        cache_path.write_text(raw_text, encoding="utf-8")
+        return raw_text
+
+    cache_path.write_text(clean_notes, encoding="utf-8")
+    return clean_notes
     
 def booster_add_named_concepts(note_text: str, concepts: list):
     found = set()

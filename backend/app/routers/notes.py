@@ -185,30 +185,40 @@ async def start_extract_note_concepts(
 @router.get("/{note_id}/extract/status", response_model=ExtractionStatusOut)
 async def get_extract_note_status(
     note_id: UUID,
+    db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
     job = get_concept_job_status(str(note_id))
 
-    if not job:
+    if job:
+        if str(job.get("user_id")) != str(user_id):
+            raise HTTPException(404, "Job not found")
+
         return {
             "note_id": str(note_id),
-            "status": "idle",
-            "progress": 0,
-            "mode": None,
-            "error": None,
-            "started_at": None,
-            "finished_at": None,
+            "status": job.get("status", "idle"),
+            "progress": int(job.get("progress", 0)),
+            "mode": job.get("mode"),
+            "error": job.get("error"),
+            "started_at": job.get("started_at"),
+            "finished_at": job.get("finished_at"),
         }
 
-    if str(job.get("user_id")) != str(user_id):
-        raise HTTPException(404, "Job not found")
+    # Fallback to persisted DB status if in-memory job state is missing.
+    res = await db.execute(
+        select(Note).where(Note.id == note_id, Note.user_id == user_id)
+    )
+    note = res.scalar_one_or_none()
+
+    if not note:
+        raise HTTPException(404, "Note not found")
 
     return {
-        "note_id": str(note_id),
-        "status": job.get("status", "idle"),
-        "progress": int(job.get("progress", 0)),
-        "mode": job.get("mode"),
-        "error": job.get("error"),
-        "started_at": job.get("started_at"),
-        "finished_at": job.get("finished_at"),
+        "note_id": str(note.id),
+        "status": note.extraction_status or "idle",
+        "progress": int(note.extraction_progress or 0),
+        "mode": note.extraction_mode,
+        "error": note.extraction_error,
+        "started_at": note.extraction_started_at.isoformat() if note.extraction_started_at else None,
+        "finished_at": note.extraction_finished_at.isoformat() if note.extraction_finished_at else None,
     }
