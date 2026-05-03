@@ -3,6 +3,7 @@
 
 import re
 import os, json
+import asyncio
 import pathlib
 from openai import OpenAI
 import numpy as np
@@ -1689,25 +1690,41 @@ async def extract_concepts_from_note(note_text: str):
     chunks = chunk_text_by_lines(cleaned, max_lines=55, overlap=8)
     all_concepts = []
 
-    for chunk in chunks:
-        resp = await kimi_chat_create(
-            model="kimi-k2.5",
-            messages=[
-                {"role": "system", "content": CONCEPT_PROMPT},
-                {"role": "user", "content": chunk},
-            ],
-        )
+    CONCEPT_CHUNK_CONCURRENCY = int(os.getenv("CONCEPT_CHUNK_CONCURRENCY", "3"))
+    sem = asyncio.Semaphore(CONCEPT_CHUNK_CONCURRENCY)
 
-        raw = resp.choices[0].message.content
-        print("\n📄 LLM RAW RESPONSE:\n", raw)
-        parsed = safe_json_loads(raw)
-        print("\n✅ PARSED JSON:\n", parsed)
 
-        if not parsed or "concepts" not in parsed:
-            continue
+    async def extract_chunk_preserve_behavior(chunk: str, chunk_index: int):
+        async with sem:
+            resp = await kimi_chat_create(
+                model="kimi-k2.5",
+                messages=[
+                    {"role": "system", "content": CONCEPT_PROMPT},
+                    {"role": "user", "content": chunk},
+                ],
+            )
 
-        chunk_concepts = parsed["concepts"]
-        grounded = [c for c in chunk_concepts if is_grounded_in_chunk(c, chunk)]
+            raw = resp.choices[0].message.content
+            print("\n📄 LLM RAW RESPONSE:\n", raw)
+            parsed = safe_json_loads(raw)
+            print("\n✅ PARSED JSON:\n", parsed)
+
+            if not parsed or "concepts" not in parsed:
+                return []
+
+            chunk_concepts = parsed["concepts"]
+            grounded = [c for c in chunk_concepts if is_grounded_in_chunk(c, chunk)]
+            return grounded
+
+
+    chunk_results = await asyncio.gather(
+        *[
+            extract_chunk_preserve_behavior(chunk, chunk_index)
+            for chunk_index, chunk in enumerate(chunks)
+        ]
+    )
+
+    for grounded in chunk_results:
         all_concepts.extend(grounded)
 
     concepts = all_concepts

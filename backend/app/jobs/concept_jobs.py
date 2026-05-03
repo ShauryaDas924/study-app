@@ -35,6 +35,23 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+class StepTimer:
+    def __init__(self, label: str, note_id: str | None = None, extra: dict | None = None):
+        self.label = label
+        self.note_id = note_id
+        self.extra = extra or {}
+        self.start = None
+
+    def __enter__(self):
+        self.start = datetime.now(timezone.utc)
+        print(f"[EXTRACTION_TIMER] START {self.label} note_id={self.note_id}", self.extra)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        end = datetime.now(timezone.utc)
+        elapsed = (end - self.start).total_seconds() if self.start else 0
+        print(f"[EXTRACTION_TIMER] END {self.label} note_id={self.note_id} elapsed={elapsed:.2f}s", self.extra)
+
 def set_concept_job_status(note_id: str, patch: dict):
     existing = CONCEPT_JOBS.get(note_id, {})
     existing.update(patch)
@@ -117,37 +134,38 @@ async def run_concept_extraction_async(
         # --------------------------------------------------
         # STEP 1: read note quickly, then close DB session
         # --------------------------------------------------
-        async with AsyncSessionLocal() as db:
-            res = await db.execute(
-                select(Note).where(
-                    Note.id == note_id,
-                    Note.user_id == user_id,
+        with StepTimer("read_note_and_mark_running", note_key):
+            async with AsyncSessionLocal() as db:
+                res = await db.execute(
+                    select(Note).where(
+                        Note.id == note_id,
+                        Note.user_id == user_id,
+                    )
                 )
-            )
-            note = res.scalar_one_or_none()
+                note = res.scalar_one_or_none()
 
-            if not note:
-                set_concept_job_status(
-                    note_key,
-                    {
-                        "status": "failed",
-                        "progress": 100,
-                        "error": "Note not found",
-                        "finished_at": now_iso(),
-                    },
-                )
-                return
+                if not note:
+                    set_concept_job_status(
+                        note_key,
+                        {
+                            "status": "failed",
+                            "progress": 100,
+                            "error": "Note not found",
+                            "finished_at": now_iso(),
+                        },
+                    )
+                    return
 
-            note_text = flatten_note_json(note.content_json)
-            class_id = note.class_id
+                note_text = flatten_note_json(note.content_json)
+                class_id = note.class_id
 
-            note.extraction_status = "running"
-            note.extraction_progress = 5
-            note.extraction_mode = mode
-            note.extraction_error = None
-            note.extraction_started_at = datetime.now(timezone.utc)
-            note.extraction_finished_at = None
-            await db.commit()
+                note.extraction_status = "running"
+                note.extraction_progress = 5
+                note.extraction_mode = mode
+                note.extraction_error = None
+                note.extraction_started_at = datetime.now(timezone.utc)
+                note.extraction_finished_at = None
+                await db.commit()
 
         # DB is closed here.
 
@@ -180,34 +198,54 @@ async def run_concept_extraction_async(
         # --------------------------------------------------
         set_concept_job_status(note_key, {"progress": 15})
 
-        if mode == "math":
-            concepts = await extract_math_concepts_from_note(note_text)
-        else:
-            concepts = await extract_concepts_from_note(note_text)
+        with StepTimer("llm_concept_extraction", note_key, {"mode": mode, "note_chars": len(note_text or "")}):
+            if mode == "math":
+                concepts = await extract_math_concepts_from_note(note_text)
+            else:
+                concepts = await extract_concepts_from_note(note_text)
+
+        print(
+            "[concept_job] concept_extraction_summary",
+            {
+                "note_id": note_key,
+                "mode": mode,
+                "note_chars": len(note_text or ""),
+                "concepts_count": len(concepts or []),
+            },
+        )
 
         set_concept_job_status(note_key, {"progress": 45})
 
         # --------------------------------------------------
         # STEP 3: enrich without extra LLM calls
         # --------------------------------------------------
-        enriched_concepts = []
+        with StepTimer("concept_enrichment_local", note_key, {"concepts_count": len(concepts or [])}):
+            enriched_concepts = []
 
-        for c in concepts:
-            pitfalls = c.get("pitfalls") or []
-            when_text = c.get("when_to_use") or ""
+            for c in concepts:
+                pitfalls = c.get("pitfalls") or []
+                when_text = c.get("when_to_use") or ""
 
-            enriched_concepts.append({
-                "name": c["name"],
-                "type": c.get("type", ""),
-                "description": c.get("description"),
-                "definition": c.get("definition") or c.get("description") or "",
-                "when_to_use": when_text,
-                "pitfalls": pitfalls,
-                "related_concepts": c.get("related_concepts", []),
-                "evidence": c.get("evidence"),
-                "confidence": float(c.get("confidence", 0.5)),
-                "exam_priority_locked": c.get("exam_priority_locked", False),
-            })
+                enriched_concepts.append({
+                    "name": c["name"],
+                    "type": c.get("type", ""),
+                    "description": c.get("description"),
+                    "definition": c.get("definition") or c.get("description") or "",
+                    "when_to_use": when_text,
+                    "pitfalls": pitfalls,
+                    "related_concepts": c.get("related_concepts", []),
+                    "evidence": c.get("evidence"),
+                    "confidence": float(c.get("confidence", 0.5)),
+                    "exam_priority_locked": c.get("exam_priority_locked", False),
+                })
+
+        print(
+            "[concept_job] enrichment_summary",
+            {
+                "note_id": note_key,
+                "enriched_concepts_count": len(enriched_concepts),
+            },
+        )
 
         # --------------------------------------------------
         # STEP 4: precompute embeddings with NO DB open
@@ -216,119 +254,159 @@ async def run_concept_extraction_async(
 
         embedding_map: dict[str, list[float] | None] = {}
 
-        for c in enriched_concepts:
-            text = f"""
-            {c.get("name", "")}
-            {c.get("description", "") or ""}
-            {c.get("definition", "") or ""}
-            """
+        with StepTimer("embedding_generation", note_key, {"concepts_count": len(enriched_concepts)}):
+            for c in enriched_concepts:
+                text = f"""
+                {c.get("name", "")}
+                {c.get("description", "") or ""}
+                {c.get("definition", "") or ""}
+                """
 
-            try:
-                embedding_map[c["name"]] = await run_in_threadpool(embed_text, text)
-            except Exception as e:
-                print(f"⚠️ embedding failed for concept {c.get('name')}: {e}")
-                embedding_map[c["name"]] = None
+                try:
+                    embedding_map[c["name"]] = await run_in_threadpool(embed_text, text)
+                except Exception as e:
+                    print(f"⚠️ embedding failed for concept {c.get('name')}: {e}")
+                    embedding_map[c["name"]] = None
+
+        print(
+            "[concept_job] embedding_summary",
+            {
+                "note_id": note_key,
+                "embedding_attempts": len(enriched_concepts),
+                "embedding_success": sum(1 for v in embedding_map.values() if v is not None),
+                "embedding_failed": sum(1 for v in embedding_map.values() if v is None),
+            },
+        )
 
         # --------------------------------------------------
         # STEP 5: write concepts quickly
         # --------------------------------------------------
         set_concept_job_status(note_key, {"progress": 60})
 
-        async with AsyncSessionLocal() as db:
-            existing_names_res = await db.execute(
-                select(Concept.name).where(
-                    Concept.user_id == user_id,
-                    Concept.class_id == class_id,
-                )
-            )
-            existing_names = {r[0].lower() for r in existing_names_res.fetchall()}
-
-            for c in enriched_concepts:
-                concept = None
-
-                if c["name"].lower() in existing_names:
-                    existing_concept_res = await db.execute(
-                        select(Concept).where(
-                            Concept.name.ilike(c["name"]),
-                            Concept.user_id == user_id,
-                            Concept.class_id == class_id,
-                        )
-                    )
-                    concept = existing_concept_res.scalars().first()
-
-                    if concept:
-                        new_desc = c.get("description")
-                        new_evidence = c.get("evidence")
-                        new_conf = float(c.get("confidence", concept.confidence or 0.5))
-
-                        if new_desc and (
-                            not concept.description
-                            or len(new_desc) > len(concept.description or "")
-                        ):
-                            concept.description = new_desc
-                            concept.definition = c.get("definition") or new_desc
-
-                        if new_evidence:
-                            concept.evidence = new_evidence
-
-                        concept.confidence = max(float(concept.confidence or 0.5), new_conf)
-                        concept.pitfalls = pitfalls_to_db(c.get("pitfalls"))
-                        concept.when_to_use = c.get("when_to_use")
-
-                        if hasattr(concept, "type"):
-                            concept.type = c.get("type", "") or getattr(concept, "type", "")
-
-                        if hasattr(concept, "related_concepts"):
-                            concept.related_concepts = c.get("related_concepts", []) or []
-
-                if not concept:
-                    concept_kwargs = dict(
-                        user_id=user_id,
-                        class_id=class_id,
-                        name=c["name"],
-                        description=c.get("description"),
-                        definition=c.get("definition") or c.get("description") or "",
-                        when_to_use=c.get("when_to_use"),
-                        pitfalls=pitfalls_to_db(c.get("pitfalls")),
-                        confidence=float(c.get("confidence", 0.5)),
-                        evidence=c.get("evidence"),
-                        embedding=embedding_map.get(c["name"]),
-                    )
-
-                    if hasattr(Concept, "type"):
-                        concept_kwargs["type"] = c.get("type", "")
-
-                    if hasattr(Concept, "related_concepts"):
-                        concept_kwargs["related_concepts"] = c.get("related_concepts", [])
-
-                    concept = Concept(**concept_kwargs)
-                    db.add(concept)
-                    await db.flush()
-
-                existing_link = await db.execute(
-                    select(NoteConcept).where(
-                        NoteConcept.note_id == note_id,
-                        NoteConcept.concept_id == concept.id,
+        with StepTimer("concept_db_write_and_links", note_key, {"concepts_count": len(enriched_concepts)}):
+            async with AsyncSessionLocal() as db:
+                note_exists_res = await db.execute(
+                    select(Note.id).where(
+                        Note.id == note_id,
+                        Note.user_id == user_id,
                     )
                 )
+                note_exists = note_exists_res.scalar_one_or_none()
 
-                if not existing_link.scalar_one_or_none():
-                    db.add(
-                        NoteConcept(
-                            note_id=note_id,
-                            concept_id=concept.id,
-                            weight=float(c.get("confidence", 1.0)),
+                if not note_exists:
+                    print(
+                        "[concept_job] note_missing_before_concept_write",
+                        {
+                            "note_id": note_key,
+                            "reason": "note_was_deleted_before_note_concepts_insert",
+                        },
+                    )
+
+                    set_concept_job_status(
+                        note_key,
+                        {
+                            "status": "cancelled",
+                            "progress": 100,
+                            "error": "Note was deleted before extraction finished.",
+                            "finished_at": now_iso(),
+                        },
+                    )
+                    return
+
+                existing_names_res = await db.execute(
+                    select(Concept.name).where(
+                        Concept.user_id == user_id,
+                        Concept.class_id == class_id,
+                    )
+                )
+                existing_names = {r[0].lower() for r in existing_names_res.fetchall()}
+
+                for c in enriched_concepts:
+                    concept = None
+
+                    if c["name"].lower() in existing_names:
+                        existing_concept_res = await db.execute(
+                            select(Concept).where(
+                                Concept.name.ilike(c["name"]),
+                                Concept.user_id == user_id,
+                                Concept.class_id == class_id,
+                            )
+                        )
+                        concept = existing_concept_res.scalars().first()
+
+                        if concept:
+                            new_desc = c.get("description")
+                            new_evidence = c.get("evidence")
+                            new_conf = float(c.get("confidence", concept.confidence or 0.5))
+
+                            if new_desc and (
+                                not concept.description
+                                or len(new_desc) > len(concept.description or "")
+                            ):
+                                concept.description = new_desc
+                                concept.definition = c.get("definition") or new_desc
+
+                            if new_evidence:
+                                concept.evidence = new_evidence
+
+                            concept.confidence = max(float(concept.confidence or 0.5), new_conf)
+                            concept.pitfalls = pitfalls_to_db(c.get("pitfalls"))
+                            concept.when_to_use = c.get("when_to_use")
+
+                            if hasattr(concept, "type"):
+                                concept.type = c.get("type", "") or getattr(concept, "type", "")
+
+                            if hasattr(concept, "related_concepts"):
+                                concept.related_concepts = c.get("related_concepts", []) or []
+
+                    if not concept:
+                        concept_kwargs = dict(
+                            user_id=user_id,
+                            class_id=class_id,
+                            name=c["name"],
+                            description=c.get("description"),
+                            definition=c.get("definition") or c.get("description") or "",
+                            when_to_use=c.get("when_to_use"),
+                            pitfalls=pitfalls_to_db(c.get("pitfalls")),
+                            confidence=float(c.get("confidence", 0.5)),
+                            evidence=c.get("evidence"),
+                            embedding=embedding_map.get(c["name"]),
+                        )
+
+                        if hasattr(Concept, "type"):
+                            concept_kwargs["type"] = c.get("type", "")
+
+                        if hasattr(Concept, "related_concepts"):
+                            concept_kwargs["related_concepts"] = c.get("related_concepts", [])
+
+                        concept = Concept(**concept_kwargs)
+                        db.add(concept)
+                        await db.flush()
+
+                    existing_link = await db.execute(
+                        select(NoteConcept).where(
+                            NoteConcept.note_id == note_id,
+                            NoteConcept.concept_id == concept.id,
                         )
                     )
 
-            res = await db.execute(
-                select(Note).where(Note.id == note_id, Note.user_id == user_id)
-            )
-            note = res.scalar_one_or_none()
-            if note:
-                note.extraction_progress = 70
+                    if not existing_link.scalar_one_or_none():
+                        db.add(
+                            NoteConcept(
+                                note_id=note_id,
+                                concept_id=concept.id,
+                                weight=float(c.get("confidence", 1.0)),
+                            )
+                        )
 
-            await db.commit()
+                res = await db.execute(
+                    select(Note).where(Note.id == note_id, Note.user_id == user_id)
+                )
+                note = res.scalar_one_or_none()
+                if note:
+                    note.extraction_progress = 70
+
+                await db.commit()
 
         # DB is closed here.
 
@@ -337,56 +415,57 @@ async def run_concept_extraction_async(
         # --------------------------------------------------
         set_concept_job_status(note_key, {"progress": 72})
 
-        async with AsyncSessionLocal() as db:
-            concept_rows = await db.execute(
-                select(Concept)
-                .join(NoteConcept, NoteConcept.concept_id == Concept.id)
-                .where(
-                    Concept.user_id == user_id,
-                    Concept.class_id == class_id,
-                    NoteConcept.note_id == note_id,
+        with StepTimer("flashcard_payload_build", note_key):
+            async with AsyncSessionLocal() as db:
+                concept_rows = await db.execute(
+                    select(Concept)
+                    .join(NoteConcept, NoteConcept.concept_id == Concept.id)
+                    .where(
+                        Concept.user_id == user_id,
+                        Concept.class_id == class_id,
+                        NoteConcept.note_id == note_id,
+                    )
                 )
-            )
-            linked_concepts = concept_rows.scalars().all()
+                linked_concepts = concept_rows.scalars().all()
 
-            concept_payloads = []
-            for concept in linked_concepts:
-                payload = {
-                    "name": concept.name,
-                    "type": getattr(concept, "type", "") or "",
-                    "description": concept.description or "",
-                    "definition": getattr(concept, "definition", "") or "",
-                    "when_to_use": getattr(concept, "when_to_use", "") or "",
-                    "pitfalls": pitfalls_from_db(getattr(concept, "pitfalls", "")),
-                    "related_concepts": getattr(concept, "related_concepts", []) or [],
-                    "evidence": concept.evidence or "",
-                    "confidence": float(concept.confidence or 0.5),
-                }
+                concept_payloads = []
+                for concept in linked_concepts:
+                    payload = {
+                        "name": concept.name,
+                        "type": getattr(concept, "type", "") or "",
+                        "description": concept.description or "",
+                        "definition": getattr(concept, "definition", "") or "",
+                        "when_to_use": getattr(concept, "when_to_use", "") or "",
+                        "pitfalls": pitfalls_from_db(getattr(concept, "pitfalls", "")),
+                        "related_concepts": getattr(concept, "related_concepts", []) or [],
+                        "evidence": concept.evidence or "",
+                        "confidence": float(concept.confidence or 0.5),
+                    }
 
-                payload["role"] = classify_concept_role(payload)
-                payload["card_budget"] = assign_card_budget(payload)
+                    payload["role"] = classify_concept_role(payload)
+                    payload["card_budget"] = assign_card_budget(payload)
 
-                if payload["card_budget"] > 0:
-                    concept_payloads.append(payload)
+                    if payload["card_budget"] > 0:
+                        concept_payloads.append(payload)
 
-            print(
-                "[concept_job] linked_concepts=",
-                len(linked_concepts),
-                "concept_payloads_for_flashcards=",
-                len(concept_payloads),
-            )
+                print(
+                    "[concept_job] linked_concepts=",
+                    len(linked_concepts),
+                    "concept_payloads_for_flashcards=",
+                    len(concept_payloads),
+                )
 
-            print("[concept_job] top flashcard payloads:", [
-                {
-                    "name": p["name"],
-                    "type": p.get("type"),
-                    "role": p.get("role"),
-                    "budget": p.get("card_budget"),
-                    "confidence": p.get("confidence"),
-                    "evidence_len": len(p.get("evidence", "")),
-                }
-                for p in concept_payloads[:20]
-            ])
+                print("[concept_job] top flashcard payloads:", [
+                    {
+                        "name": p["name"],
+                        "type": p.get("type"),
+                        "role": p.get("role"),
+                        "budget": p.get("card_budget"),
+                        "confidence": p.get("confidence"),
+                        "evidence_len": len(p.get("evidence", "")),
+                    }
+                    for p in concept_payloads[:20]
+                ])
 
         # DB is closed here.
 
@@ -403,13 +482,14 @@ async def run_concept_extraction_async(
         # --------------------------------------------------
         set_concept_job_status(note_key, {"progress": 80})
 
-        if concept_payloads:
-            if mode == "math":
-                flashcards = await generate_math_flashcards_from_concepts(concept_payloads)
+        with StepTimer("llm_flashcard_generation", note_key, {"payload_count": len(concept_payloads), "mode": mode}):
+            if concept_payloads:
+                if mode == "math":
+                    flashcards = await generate_math_flashcards_from_concepts(concept_payloads)
+                else:
+                    flashcards = await generate_flashcards_from_concepts(concept_payloads)
             else:
-                flashcards = await generate_flashcards_from_concepts(concept_payloads)
-        else:
-            flashcards = []
+                flashcards = []
 
         print("[concept_job] generated_flashcards_before_grounding=", len(flashcards))
         print("[concept_job] sample_flashcards_before_grounding=", flashcards[:10])
@@ -420,10 +500,11 @@ async def run_concept_extraction_async(
         if flashcards and mode != "math":
             set_concept_job_status(note_key, {"progress": 86})
 
-            flashcards = await ground_flashcards_against_lecture(
-                note_text=note_text,
-                flashcards=flashcards,
-            )
+            with StepTimer("llm_flashcard_grounding", note_key, {"flashcards_count": len(flashcards)}):
+                flashcards = await ground_flashcards_against_lecture(
+                    note_text=note_text,
+                    flashcards=flashcards,
+                )
 
         print("[concept_job] generated_flashcards_after_grounding=", len(flashcards))
         print("[concept_job] sample_flashcards_after_grounding=", flashcards[:10])
@@ -432,140 +513,141 @@ async def run_concept_extraction_async(
         # --------------------------------------------------
         set_concept_job_status(note_key, {"progress": 90})
 
-        async with AsyncSessionLocal() as db:
-            concept_rows = await db.execute(
-                select(Concept)
-                .join(NoteConcept, NoteConcept.concept_id == Concept.id)
-                .where(
-                    Concept.user_id == user_id,
-                    Concept.class_id == class_id,
-                    NoteConcept.note_id == note_id,
+        with StepTimer("flashcard_db_save", note_key, {"flashcards_count": len(flashcards)}):
+            async with AsyncSessionLocal() as db:
+                concept_rows = await db.execute(
+                    select(Concept)
+                    .join(NoteConcept, NoteConcept.concept_id == Concept.id)
+                    .where(
+                        Concept.user_id == user_id,
+                        Concept.class_id == class_id,
+                        NoteConcept.note_id == note_id,
+                    )
                 )
-            )
-            linked_concepts = concept_rows.scalars().all()
+                linked_concepts = concept_rows.scalars().all()
 
-            concept_lookup = {
-                concept.name: concept.id
-                for concept in linked_concepts
-            }
-
-            normalized_concept_lookup = {
-                concept.name.lower().replace(" ", "_"): concept.id
-                for concept in linked_concepts
-            }
-
-            existing_flashcards_res = await db.execute(
-                select(Flashcard.question, Flashcard.answer).where(
-                    Flashcard.user_id == user_id,
-                    Flashcard.note_id == note_id,
-                )
-            )
-
-            existing_flashcards = [
-                {
-                    "question": row[0] or "",
-                    "answer": row[1] or "",
-                }
-                for row in existing_flashcards_res.fetchall()
-            ]
-
-            existing_flashcard_questions = {
-                c["question"].strip().lower()
-                for c in existing_flashcards
-            }
-
-            saved_count = 0
-            skipped_exact_duplicate = 0
-            skipped_semantic_duplicate = 0
-            skipped_missing_question = 0
-
-            for card in flashcards:
-                q_key = card.get("question", "").strip().lower()
-                if not q_key:
-                    skipped_missing_question += 1
-                    continue
-
-                if q_key in existing_flashcard_questions:
-                    skipped_exact_duplicate += 1
-                    continue
-
-                candidate = {
-                    "question": card.get("question", ""),
-                    "answer": card.get("answer", ""),
-                    "concept_name": card.get("concept_name", ""),
-                    "card_type": card.get("card_type", ""),
-                    "source_evidence": card.get("source_evidence", ""),
+                concept_lookup = {
+                    concept.name: concept.id
+                    for concept in linked_concepts
                 }
 
-                if any(flashcards_too_similar(candidate, old) for old in existing_flashcards):
-                    skipped_semantic_duplicate += 1
-                    continue
-    
-                card_concept_name = (card.get("concept_name") or "").strip()
-                matched_concept_id = concept_lookup.get(card_concept_name)
+                normalized_concept_lookup = {
+                    concept.name.lower().replace(" ", "_"): concept.id
+                    for concept in linked_concepts
+                }
 
-                if not matched_concept_id:
-                    matched_concept_id = normalized_concept_lookup.get(
-                        card_concept_name.lower().replace(" ", "_")
+                existing_flashcards_res = await db.execute(
+                    select(Flashcard.question, Flashcard.answer).where(
+                        Flashcard.user_id == user_id,
+                        Flashcard.note_id == note_id,
+                    )
+                )
+
+                existing_flashcards = [
+                    {
+                        "question": row[0] or "",
+                        "answer": row[1] or "",
+                    }
+                    for row in existing_flashcards_res.fetchall()
+                ]
+
+                existing_flashcard_questions = {
+                    c["question"].strip().lower()
+                    for c in existing_flashcards
+                }
+
+                saved_count = 0
+                skipped_exact_duplicate = 0
+                skipped_semantic_duplicate = 0
+                skipped_missing_question = 0
+
+                for card in flashcards:
+                    q_key = card.get("question", "").strip().lower()
+                    if not q_key:
+                        skipped_missing_question += 1
+                        continue
+
+                    if q_key in existing_flashcard_questions:
+                        skipped_exact_duplicate += 1
+                        continue
+
+                    candidate = {
+                        "question": card.get("question", ""),
+                        "answer": card.get("answer", ""),
+                        "concept_name": card.get("concept_name", ""),
+                        "card_type": card.get("card_type", ""),
+                        "source_evidence": card.get("source_evidence", ""),
+                    }
+
+                    if any(flashcards_too_similar(candidate, old) for old in existing_flashcards):
+                        skipped_semantic_duplicate += 1
+                        continue
+        
+                    card_concept_name = (card.get("concept_name") or "").strip()
+                    matched_concept_id = concept_lookup.get(card_concept_name)
+
+                    if not matched_concept_id:
+                        matched_concept_id = normalized_concept_lookup.get(
+                            card_concept_name.lower().replace(" ", "_")
+                        )
+
+                    if not matched_concept_id:
+                        for name, cid in concept_lookup.items():
+                            if name.replace("_", " ") in (
+                                (card.get("question", "") + " " + card.get("answer", "")).lower()
+                            ):
+                                matched_concept_id = cid
+                                break
+
+                    flashcard_kwargs = dict(
+                        user_id=user_id,
+                        class_id=class_id,
+                        note_id=note_id,
+                        concept_id=matched_concept_id,
+                        question=card["question"],
+                        answer=card["answer"],
+                        confidence=float(card.get("confidence", 0.7)),
+                        next_review=datetime.now(timezone.utc),
                     )
 
-                if not matched_concept_id:
-                    for name, cid in concept_lookup.items():
-                        if name.replace("_", " ") in (
-                            (card.get("question", "") + " " + card.get("answer", "")).lower()
-                        ):
-                            matched_concept_id = cid
-                            break
+                    if hasattr(Flashcard, "card_type"):
+                        flashcard_kwargs["card_type"] = card.get("card_type")
 
-                flashcard_kwargs = dict(
-                    user_id=user_id,
-                    class_id=class_id,
-                    note_id=note_id,
-                    concept_id=matched_concept_id,
-                    question=card["question"],
-                    answer=card["answer"],
-                    confidence=float(card.get("confidence", 0.7)),
-                    next_review=datetime.now(timezone.utc),
+                    if hasattr(Flashcard, "source_evidence"):
+                        flashcard_kwargs["source_evidence"] = card.get("source_evidence")
+
+                    if hasattr(Flashcard, "why_this_card_matters"):
+                        flashcard_kwargs["why_this_card_matters"] = card.get("why_this_card_matters")
+
+                    fc = Flashcard(**flashcard_kwargs)
+                    db.add(fc)
+                    saved_count += 1
+                    existing_flashcard_questions.add(q_key)
+                    existing_flashcards.append(candidate)
+
+                res = await db.execute(
+                    select(Note).where(Note.id == note_id, Note.user_id == user_id)
                 )
-
-                if hasattr(Flashcard, "card_type"):
-                    flashcard_kwargs["card_type"] = card.get("card_type")
-
-                if hasattr(Flashcard, "source_evidence"):
-                    flashcard_kwargs["source_evidence"] = card.get("source_evidence")
-
-                if hasattr(Flashcard, "why_this_card_matters"):
-                    flashcard_kwargs["why_this_card_matters"] = card.get("why_this_card_matters")
-
-                fc = Flashcard(**flashcard_kwargs)
-                db.add(fc)
-                saved_count += 1
-                existing_flashcard_questions.add(q_key)
-                existing_flashcards.append(candidate)
-
-            res = await db.execute(
-                select(Note).where(Note.id == note_id, Note.user_id == user_id)
-            )
-            note = res.scalar_one_or_none()
-            if note:
-                note.extraction_status = "completed"
-                note.extraction_progress = 100
-                note.extraction_error = None
-                note.extraction_finished_at = datetime.now(timezone.utc)
-            
-            print(
-                "[concept_job] flashcard_save_summary",
-                {
-                    "generated": len(flashcards),
-                    "saved": saved_count,
-                    "skipped_missing_question": skipped_missing_question,
-                    "skipped_exact_duplicate": skipped_exact_duplicate,
-                    "skipped_semantic_duplicate": skipped_semantic_duplicate,
-                }
-            )
-            
-            
-            await db.commit()
+                note = res.scalar_one_or_none()
+                if note:
+                    note.extraction_status = "completed"
+                    note.extraction_progress = 100
+                    note.extraction_error = None
+                    note.extraction_finished_at = datetime.now(timezone.utc)
+                
+                print(
+                    "[concept_job] flashcard_save_summary",
+                    {
+                        "generated": len(flashcards),
+                        "saved": saved_count,
+                        "skipped_missing_question": skipped_missing_question,
+                        "skipped_exact_duplicate": skipped_exact_duplicate,
+                        "skipped_semantic_duplicate": skipped_semantic_duplicate,
+                    }
+                )
+                
+                
+                await db.commit()
 
         set_concept_job_status(
             note_key,
