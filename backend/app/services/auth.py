@@ -1,5 +1,7 @@
 import os
 from uuid import UUID
+
+import httpx
 from fastapi import Header, HTTPException
 
 def _env_true(v: str | None) -> bool:
@@ -8,14 +10,43 @@ def _env_true(v: str | None) -> bool:
 DEV_MODE = _env_true(os.getenv("DEV_MODE"))
 DEV_USER_ID = os.getenv("DEV_USER_ID", "00000000-0000-0000-0000-000000000001")
 
-async def get_current_user_id(authorization: str | None = Header(default=None)):
-    # Dev-mode bypass
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+
+async def get_current_user_id(authorization: str | None = Header(default=None)) -> UUID:
     if DEV_MODE:
         return UUID(DEV_USER_ID)
 
-    # Real auth (later): require Bearer token
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing Bearer token")
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
 
-    # In production you would decode JWT + verify
-    raise HTTPException(501, "Auth not implemented yet (turn on DEV_MODE=true)")
+    token = authorization.removeprefix("Bearer ").strip()
+
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        raise HTTPException(status_code=500, detail="Supabase auth env vars missing")
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.get(
+                f"{SUPABASE_URL}/auth/v1/user",
+                headers={
+                    "apikey": SUPABASE_ANON_KEY,
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+
+        if res.status_code != 200:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+        data = res.json()
+        user_id = data.get("id")
+
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid auth user")
+
+        return UUID(user_id)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Could not verify token: {str(e)}")
