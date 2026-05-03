@@ -15,6 +15,11 @@ with open(EXAMPLE_QUESTIONS_PATH) as f:
     EXAMPLE_QUESTIONS = f.read()
 
 
+try:
+    from json_repair import repair_json
+except Exception:
+    repair_json = None
+
 NOTES_REFINEMENT_PROMPT = """
 You are an expert instructor, learning scientist, and exam strategist.
 
@@ -397,56 +402,61 @@ SCHEMA_PATH = pathlib.Path("practice_question_schema.json")
 with open(SCHEMA_PATH) as f:
     QUESTION_SCHEMA = json.load(f)
     
-def safe_json_loads(s: str):
-    if not s:
+def safe_json_loads(raw: str):
+    if raw is None:
         return None
 
-    # Remove markdown code fences
-    s = s.replace("```json", "").replace("```", "").strip()
+    text = str(raw).strip()
 
-    # Normalize smart quotes / apostrophes
-    s = (
-        s.replace("\u201c", '"')
-         .replace("\u201d", '"')
-         .replace("\u2018", "'")
-         .replace("\u2019", "'")
-    )
+    # Strip markdown fences.
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
 
-    # Extract the largest JSON object span
-    start = s.find("{")
-    end = s.rfind("}")
-    if start != -1 and end != -1:
-        s = s[start:end + 1]
-
-    # First attempt: direct parse
+    # Try direct parse first.
     try:
-        return json.loads(s)
+        return json.loads(text)
     except Exception:
         pass
 
-    # Repair common LLM JSON issue:
-    # unescaped quoted word/phrase inside a JSON string, e.g.
-    # "evidence": "blessing" (employees ...)"
-    s_fixed = s
+    # Try extracting the largest JSON object/array from extra prose.
+    candidates = []
 
-    # Replace inner quotes inside evidence/description values with single quotes
-    s_fixed = re.sub(
-        r'("(?:evidence|description)"\s*:\s*")([^"\n]*?)"(\s*\([^"\n]*?\))(")',
-        lambda m: f'{m.group(1)}{m.group(2)}\'{m.group(3)}{m.group(4)}',
-        s_fixed
-    )
+    first_obj = text.find("{")
+    last_obj = text.rfind("}")
+    if first_obj != -1 and last_obj != -1 and last_obj > first_obj:
+        candidates.append(text[first_obj : last_obj + 1])
 
-    # Remove trailing commas before } or ]
-    s_fixed = re.sub(r",(\s*[}\]])", r"\1", s_fixed)
+    first_arr = text.find("[")
+    last_arr = text.rfind("]")
+    if first_arr != -1 and last_arr != -1 and last_arr > first_arr:
+        candidates.append(text[first_arr : last_arr + 1])
 
-    try:
-        return json.loads(s_fixed)
-    except Exception as e:
-        print("\n⚠️ LLM JSON PARSE FAILED")
-        print("RAW OUTPUT:\n", s)
-        print("REPAIRED OUTPUT:\n", s_fixed)
-        print("ERROR:", e, "\n")
-        return None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+        if repair_json:
+            try:
+                repaired = repair_json(candidate)
+                return json.loads(repaired)
+            except Exception:
+                pass
+
+    # Last chance: repair the full text.
+    if repair_json:
+        try:
+            repaired = repair_json(text)
+            return json.loads(repaired)
+        except Exception:
+            pass
+
+    print("\n⚠️ LLM JSON PARSE FAILED")
+    print("RAW OUTPUT:\n", raw)
+    return None
         
 # ================= BOOSTER =================
 
@@ -2759,6 +2769,12 @@ Return JSON ONLY:
 
 }
 
+JSON safety:
+- Return valid JSON only.
+- Do not include unescaped quotation marks inside string values.
+- If you need to quote a phrase, use single quotes inside the string or omit quotation marks.
+- Never write values like "answer": ""quoted text"". Use "answer": "quoted text" instead.
+
 OUTPUT QUALITY RULES:
 - source_evidence must be copied from the concept payload.
 - If no source_evidence supports the card, do not generate the card.
@@ -2913,6 +2929,14 @@ Rules:
 - Keep answers short: 1–2 lines maximum.
 - Every supported card must include a source_evidence phrase copied or closely grounded from the lecture notes.
 - Do not make the deck prettier. Make it safer and more lecture-faithful.
+
+
+JSON safety:
+- Return valid JSON only.
+- Do not include unescaped quotation marks inside string values.
+- If you need to quote a phrase, use single quotes inside the string or omit quotation marks.
+- Never write values like "answer": ""quoted text"". Use "answer": "quoted text" instead.
+
 
 Return JSON only:
 

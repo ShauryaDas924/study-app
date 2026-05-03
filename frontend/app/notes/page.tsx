@@ -83,7 +83,7 @@ useEffect(() => {
     refetchInterval: (query) => {
       const data: any = query.state.data;
       const status = data?.status;
-     if (status === "queued" || status === "running") return 5000;
+    if (status === "queued" || status === "running") return 8000;
       return false;
     },
   });
@@ -103,9 +103,6 @@ useEffect(() => {
     qc.invalidateQueries({ queryKey: ["note", selectedNoteId] });
     fetchConcepts();
     fetchDBFlashcards();
-
-    localStorage.removeItem("activeExtractionMeta");
-    localStorage.removeItem("activeExtractionNoteId");
   }
 
   if (status === "failed") {

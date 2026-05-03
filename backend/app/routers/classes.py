@@ -21,6 +21,7 @@ from app.models import (
     Attempt,
     MistakeLog,
     Question,
+    PracticeSet,
     TutorMemory,
     ConceptDependency,
     ChatMemory,
@@ -121,7 +122,14 @@ async def clear_class_data(
     await db.execute(
         delete(Question).where(
             Question.user_id == user_id,
-            Question.concept_id.in_(concept_ids)
+            Question.class_id == class_id,
+        )
+    )
+    
+    await db.execute(
+        delete(PracticeSet).where(
+            PracticeSet.user_id == user_id,
+            PracticeSet.class_id == class_id,
         )
     )
 
