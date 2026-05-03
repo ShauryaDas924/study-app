@@ -13,12 +13,18 @@ function getSafeNextPath() {
   return raw;
 }
 
+function getInitialMessage() {
+  if (typeof window === "undefined") return "";
+
+  return new URLSearchParams(window.location.search).get("error") || "";
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState<"login" | "signup" | null>(null);
-  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState<"login" | "signup" | "google" | null>(null);
+  const [message, setMessage] = useState(getInitialMessage);
   const next = getSafeNextPath();
 
   async function handleLogin() {
@@ -57,6 +63,23 @@ export default function LoginPage() {
     }
 
     setMessage("Account created. Check your email if confirmation is enabled, then log in.");
+  }
+
+  async function handleGoogleLogin() {
+    setLoading("google");
+    setMessage("");
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`,
+      },
+    });
+
+    if (error) {
+      setLoading(null);
+      setMessage(error.message);
+    }
   }
 
   return (
@@ -98,6 +121,18 @@ export default function LoginPage() {
             {message}
           </div>
         )}
+
+        <button
+          className="app-button-secondary w-full px-4 py-2"
+          disabled={!!loading}
+          onClick={handleGoogleLogin}
+        >
+          {loading === "google" ? "Opening Google..." : "Continue with Google"}
+        </button>
+
+        <div className="text-center text-xs" style={{ color: "var(--text-soft)" }}>
+          or use email
+        </div>
 
         <div className="flex flex-wrap gap-3">
           <button
