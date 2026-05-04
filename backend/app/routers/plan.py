@@ -6,7 +6,7 @@ from uuid import UUID
 from datetime import datetime
 
 from app.db import get_db
-from app.models import Concept, Mastery, Exam
+from app.models import Class, Concept, Mastery, Exam
 from app.models import MistakeLog
 from app.services.auth import get_current_user_id
 from app.services.planner import build_study_plan, build_weekly_curriculum
@@ -20,9 +20,21 @@ class PlanIn(BaseModel):
 
 @router.post("/generate")
 async def generate_plan(payload: PlanIn, db: AsyncSession = Depends(get_db), user_id: UUID = Depends(get_current_user_id)):
+    class_res = await db.execute(
+        select(Class.id).where(Class.id == payload.class_id, Class.user_id == user_id)
+    )
+    if not class_res.scalar_one_or_none():
+        raise HTTPException(404, "Class not found")
+
     # resolve exam_date
     if payload.exam_id:
-        eres = await db.execute(select(Exam).where(Exam.id == payload.exam_id, Exam.user_id == user_id))
+        eres = await db.execute(
+            select(Exam).where(
+                Exam.id == payload.exam_id,
+                Exam.user_id == user_id,
+                Exam.class_id == payload.class_id,
+            )
+        )
         exam = eres.scalar_one_or_none()
         if not exam:
             raise HTTPException(404, "Exam not found")
@@ -93,9 +105,21 @@ async def generate_plan(payload: PlanIn, db: AsyncSession = Depends(get_db), use
     
 @router.post("/weekly-generate")
 async def weekly_generate_plan(payload: PlanIn, db: AsyncSession = Depends(get_db), user_id: UUID = Depends(get_current_user_id)):
+    class_res = await db.execute(
+        select(Class.id).where(Class.id == payload.class_id, Class.user_id == user_id)
+    )
+    if not class_res.scalar_one_or_none():
+        raise HTTPException(404, "Class not found")
+
     # resolve exam_date (same logic you already use)
     if payload.exam_id:
-        eres = await db.execute(select(Exam).where(Exam.id == payload.exam_id, Exam.user_id == user_id))
+        eres = await db.execute(
+            select(Exam).where(
+                Exam.id == payload.exam_id,
+                Exam.user_id == user_id,
+                Exam.class_id == payload.class_id,
+            )
+        )
         exam = eres.scalar_one_or_none()
         if not exam:
             raise HTTPException(404, "Exam not found")

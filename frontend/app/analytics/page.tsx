@@ -9,8 +9,9 @@ import { Button } from "@/components/ui/Button";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useStore } from "@/store/useStore";
+import RequireAuth from "@/components/RequireAuth";
 
-export default function AnalyticsPage() {
+function AnalyticsContent() {
   const classId = useStore((s) => s.selectedClassId);
 
   const depsM = useMutation({
@@ -67,5 +68,13 @@ export default function AnalyticsPage() {
         </Card>
       </div>
     </div>
+  );
+}
+
+export default function AnalyticsPage() {
+  return (
+    <RequireAuth>
+      <AnalyticsContent />
+    </RequireAuth>
   );
 }

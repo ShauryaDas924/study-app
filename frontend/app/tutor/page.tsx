@@ -4,8 +4,10 @@ import { useEffect, useState } from "react";
 import { useStore } from "@/store/useStore";
 import { Card, CardHeader } from "@/components/ui/Card";
 import TutorChat from "@/components/TutorChat";
+import { authFetch } from "@/lib/auth";
+import RequireAuth from "@/components/RequireAuth";
 
-export default function TutorPage() {
+function TutorContent() {
   const classId = useStore((s) => s.selectedClassId);
 
   const [pitfalls, setPitfalls] = useState<any[]>([]);
@@ -20,9 +22,7 @@ export default function TutorPage() {
     if (!classId) return;
 
     try {
-      const res = await fetch(
-        `http://localhost:8000/homework/pitfalls/${classId}`
-      );
+      const res = await authFetch(`/homework/pitfalls/${classId}`);
       const data = await res.json();
       setPitfalls(data || []);
     } catch {
@@ -44,8 +44,8 @@ export default function TutorPage() {
     setGenerated("");
 
     try {
-      const res = await fetch(
-        "http://localhost:8000/homework/practice-pitfall",
+      const res = await authFetch(
+        "/homework/practice-pitfall",
         {
           method: "POST",
           headers: {
@@ -81,8 +81,8 @@ export default function TutorPage() {
     setClearing(true);
 
     try {
-      await fetch(
-        `http://localhost:8000/homework/pitfalls/${classId}`,
+      await authFetch(
+        `/homework/pitfalls/${classId}`,
         {
           method: "DELETE",
         }
@@ -169,5 +169,13 @@ export default function TutorPage() {
         <TutorChat />
       </Card>
     </div>
+  );
+}
+
+export default function TutorPage() {
+  return (
+    <RequireAuth>
+      <TutorContent />
+    </RequireAuth>
   );
 }

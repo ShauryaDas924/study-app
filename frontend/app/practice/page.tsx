@@ -5,8 +5,10 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import PracticeSetup from "@/components/PracticeSetup";
 import PracticePlayer from "@/components/PracticePlayer";
 import { useStore } from "@/store/useStore";
+import { authFetch } from "@/lib/auth";
+import RequireAuth from "@/components/RequireAuth";
 
-export default function PracticePage() {
+function PracticeContent() {
 
   const classId = useStore(s => s.selectedClassId);
   const setPracticeSession = useStore(s => s.setPracticeSession);
@@ -16,7 +18,7 @@ export default function PracticePage() {
   useEffect(() => {
     if (!classId) return;
 
-    fetch(`http://localhost:8000/practice/latest/${classId}`)
+    authFetch(`/practice/latest/${classId}`)
       .then(r => r.json())
       .then(data => {
         if (!data.questions?.length) return;
@@ -62,5 +64,13 @@ export default function PracticePage() {
 
       <PracticePlayer />
     </div>
+  );
+}
+
+export default function PracticePage() {
+  return (
+    <RequireAuth>
+      <PracticeContent />
+    </RequireAuth>
   );
 }

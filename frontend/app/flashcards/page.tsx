@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "@/store/useStore";
+import { authFetch } from "@/lib/auth";
+import RequireAuth from "@/components/RequireAuth";
 
 type Card = {
   id: string;
@@ -74,7 +76,7 @@ function reorderByIds(allCards: Card[], ids: string[]): Card[] {
   return ids.map((id) => map.get(id)).filter(Boolean) as Card[];
 }
 
-export default function FlashcardsPage() {
+function FlashcardsContent() {
   const classId = useStore((s) => s.selectedClassId);
   const noteId = useStore((s) => s.selectedNoteId);
   const setSelectedNoteId = useStore((s) => s.setSelectedNoteId);
@@ -113,7 +115,7 @@ const skipNextSaveRef = useRef(false);
 
     async function loadNotes() {
       try {
-        const res = await fetch(`http://localhost:8000/notes/by-class/${classId}`);
+        const res = await authFetch(`/notes/by-class/${classId}`);
         const data = await res.json();
         if (cancelled) return;
 
@@ -154,7 +156,7 @@ const skipNextSaveRef = useRef(false);
     medium_ids: mediumPile.map((c) => c.id),
   };
 
-  fetch(`http://localhost:8000/notes/flashcards/session/${noteId}`, {
+  authFetch(`/notes/flashcards/session/${noteId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -214,8 +216,8 @@ const skipNextSaveRef = useRef(false);
 
     try {
       const [cardsRes, sessionRes] = await Promise.all([
-        fetch(`http://localhost:8000/notes/flashcards/by-note/${nid}`),
-        fetch(`http://localhost:8000/notes/flashcards/session/${nid}`),
+        authFetch(`/notes/flashcards/by-note/${nid}`),
+        authFetch(`/notes/flashcards/session/${nid}`),
       ]);
 
       if (!cardsRes.ok) {
@@ -432,11 +434,11 @@ const skipNextSaveRef = useRef(false);
   });
 
   try {
-    await fetch(`http://localhost:8000/notes/flashcards/session/${noteId}`, {
+    await authFetch(`/notes/flashcards/session/${noteId}`, {
       method: "DELETE",
     });
 
-    await fetch(`http://localhost:8000/notes/flashcards/session/${noteId}`, {
+    await authFetch(`/notes/flashcards/session/${noteId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -582,7 +584,7 @@ const skipNextSaveRef = useRef(false);
     if (!noteId) return;
 
     try {
-      const res = await fetch(`http://localhost:8000/notes/flashcards/export-by-note/${noteId}`);
+      const res = await authFetch(`/notes/flashcards/export-by-note/${noteId}`);
       if (!res.ok) {
         alert("Export failed");
         return;
@@ -1021,5 +1023,13 @@ const skipNextSaveRef = useRef(false);
         Card {Math.min(i + 1, cards.length)} / {cards.length}
       </div>
     </div>
+  );
+}
+
+export default function FlashcardsPage() {
+  return (
+    <RequireAuth>
+      <FlashcardsContent />
+    </RequireAuth>
   );
 }

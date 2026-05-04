@@ -6,6 +6,8 @@ import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
+import { authFetch } from "@/lib/auth";
+import RequireAuth from "@/components/RequireAuth";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -57,7 +59,7 @@ function getAssistantText(data: any, fallback = "No response returned.") {
   );
 }
 
-export default function HomeworkPage() {
+function HomeworkContent() {
   const classId = useStore((s) => s.selectedClassId);
 
   const [q, setQ] = useState("");
@@ -107,7 +109,7 @@ export default function HomeworkPage() {
       if (!classId) return;
 
       try {
-        const res = await fetch(`http://localhost:8000/homework/chat-history/${classId}`);
+        const res = await authFetch(`/homework/chat-history/${classId}`);
         const data = await res.json();
 
         if (Array.isArray(data) && data.length > 0) {
@@ -126,9 +128,7 @@ export default function HomeworkPage() {
       if (!classId) return;
 
       try {
-        const res = await fetch(
-          `http://localhost:8000/homework/review-work-sessions/${classId}`
-        );
+        const res = await authFetch(`/homework/review-work-sessions/${classId}`);
         const data = await res.json();
         setReviewSessions(Array.isArray(data) ? data : []);
       } catch {
@@ -253,7 +253,7 @@ export default function HomeworkPage() {
     setLoading(true);
 
     try {
-      const res = await fetch("http://localhost:8000/homework/help", {
+      const res = await authFetch("/homework/help", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ class_id: classId, question }),
@@ -298,7 +298,7 @@ export default function HomeworkPage() {
     if (!sid) return;
 
     try {
-      const res = await fetch(`http://localhost:8000/homework/step-review-history/${sid}`);
+      const res = await authFetch(`/homework/step-review-history/${sid}`);
       const data = await res.json();
       setStepHistory(Array.isArray(data) ? data : []);
     } catch {
@@ -310,9 +310,7 @@ export default function HomeworkPage() {
     if (!classId) return;
 
     try {
-      const res = await fetch(
-        `http://localhost:8000/homework/review-work-sessions/${classId}`
-      );
+      const res = await authFetch(`/homework/review-work-sessions/${classId}`);
       const data = await res.json();
       setReviewSessions(Array.isArray(data) ? data : []);
     } catch {
@@ -337,7 +335,7 @@ export default function HomeworkPage() {
     setLoading(true);
 
     try {
-      const res = await fetch("http://localhost:8000/homework/step-check", {
+      const res = await authFetch("/homework/step-check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -398,8 +396,8 @@ export default function HomeworkPage() {
     setLoading(true);
 
     try {
-      const res = await fetch(
-        `http://localhost:8000/homework/upload-help?class_id=${classId}`,
+      const res = await authFetch(
+        `/homework/upload-help?class_id=${classId}`,
         {
           method: "POST",
           body: form,
@@ -456,8 +454,8 @@ export default function HomeworkPage() {
     setLoading(true);
 
     try {
-      const res = await fetch(
-        `http://localhost:8000/homework/review-work?class_id=${classId}`,
+      const res = await authFetch(
+        `/homework/review-work?class_id=${classId}`,
         {
           method: "POST",
           body: form,
@@ -512,8 +510,8 @@ export default function HomeworkPage() {
     setLoading(true);
 
     try {
-      const res = await fetch(
-        `http://localhost:8000/homework/review-work-session?class_id=${classId}`,
+      const res = await authFetch(
+        `/homework/review-work-session?class_id=${classId}`,
         {
           method: "POST",
           body: form,
@@ -571,7 +569,7 @@ export default function HomeworkPage() {
     if (!classId) return;
 
     try {
-      await fetch(`http://localhost:8000/homework/chat-history/${classId}`, {
+      await authFetch(`/homework/chat-history/${classId}`, {
         method: "DELETE",
       });
     } finally {
@@ -1031,5 +1029,13 @@ export default function HomeworkPage() {
         </Modal>
       )}
     </div>
+  );
+}
+
+export default function HomeworkPage() {
+  return (
+    <RequireAuth>
+      <HomeworkContent />
+    </RequireAuth>
   );
 }

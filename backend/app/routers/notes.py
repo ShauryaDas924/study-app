@@ -10,7 +10,7 @@ from app.jobs.concept_jobs import (
     set_concept_job_status,
 )
 from app.db import get_db
-from app.models import Note
+from app.models import Class, Note
 from app.services.auth import get_current_user_id
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -50,6 +50,12 @@ async def create_note(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
+    class_res = await db.execute(
+        select(Class.id).where(Class.id == payload.class_id, Class.user_id == user_id)
+    )
+    if not class_res.scalar_one_or_none():
+        raise HTTPException(404, "Class not found")
+
     obj = Note(
         user_id=user_id,
         class_id=payload.class_id,

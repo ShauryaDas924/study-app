@@ -9,6 +9,7 @@ import time
 import base64
 from sqlalchemy.dialects.postgresql import insert
 from app.models import (
+    Class,
     Concept,
     ChatMemory,
     StudentPitfall,
@@ -24,6 +25,14 @@ from app.services.auth import get_current_user_id
 from app.services.mastery import update_mastery_value
 
 router = APIRouter(prefix="/homework", tags=["homework"])
+
+
+async def ensure_class_owned(db: AsyncSession, user_id: UUID, class_id: UUID):
+    res = await db.execute(
+        select(Class.id).where(Class.id == class_id, Class.user_id == user_id)
+    )
+    if not res.scalar_one_or_none():
+        raise HTTPException(404, "Class not found")
 
 
 class HWIn(BaseModel):
@@ -190,6 +199,7 @@ async def homework_help(
         class_uuid = UUID(body.class_id)
     except:
         raise HTTPException(400, "Invalid class_id")
+    await ensure_class_owned(db, current_user_id, class_uuid)
 
     # ----------------------
     # ANALYZE WORK MODE
@@ -1086,9 +1096,10 @@ async def homework_upload_help(
         raise HTTPException(400, "class_id required")
 
     try:
-        UUID(class_id)
+        class_uuid = UUID(class_id)
     except:
         raise HTTPException(400, "Invalid class_id")
+    await ensure_class_owned(db, current_user_id, class_uuid)
 
     content = await file.read()
     text = await extract_text(file.filename, content)
@@ -1108,10 +1119,16 @@ async def clear_chat(
     db: AsyncSession = Depends(get_db),
     current_user_id: str = Depends(get_current_user_id)
 ):
+    try:
+        class_uuid = UUID(class_id)
+    except:
+        raise HTTPException(400, "Invalid class_id")
+    await ensure_class_owned(db, current_user_id, class_uuid)
+
     await db.execute(
         ChatMemory.__table__.delete().where(
             ChatMemory.user_id == current_user_id,
-            ChatMemory.class_id == UUID(class_id)
+            ChatMemory.class_id == class_uuid
         )
     )
 
@@ -1134,6 +1151,7 @@ async def create_review_work_session(
         class_uuid = UUID(class_id)
     except:
         raise HTTPException(400, "Invalid class_id")
+    await ensure_class_owned(db, current_user_id, class_uuid)
 
     content = await file.read()
 
@@ -1175,6 +1193,7 @@ async def get_review_work_sessions(
         class_uuid = UUID(class_id)
     except:
         raise HTTPException(400, "Invalid class_id")
+    await ensure_class_owned(db, current_user_id, class_uuid)
 
     res = await db.execute(
         select(WorkReviewSession)
@@ -1212,7 +1231,11 @@ async def review_student_work(
     if not class_id:
         raise HTTPException(400, "class_id required")
 
-    class_uuid = UUID(class_id)
+    try:
+        class_uuid = UUID(class_id)
+    except:
+        raise HTTPException(400, "Invalid class_id")
+    await ensure_class_owned(db, current_user_id, class_uuid)
 
     # -------- LOAD CLASS CONCEPTS --------
     res = await db.execute(
@@ -1446,8 +1469,13 @@ async def step_check(
         raise HTTPException(400, "Invalid class_id or session_id")
 
     session = await db.get(WorkReviewSession, session_uuid)
-    if not session or str(session.user_id) != str(current_user_id):
+    if (
+        not session
+        or str(session.user_id) != str(current_user_id)
+        or session.class_id != class_uuid
+    ):
         raise HTTPException(404, "Review session not found")
+    await ensure_class_owned(db, current_user_id, class_uuid)
 
     # -------- LOAD CLASS CONCEPTS --------
     res = await db.execute(
@@ -1729,11 +1757,16 @@ async def get_pitfalls(
     db: AsyncSession = Depends(get_db),
     current_user_id: str = Depends(get_current_user_id)
 ):
+    try:
+        class_uuid = UUID(class_id)
+    except:
+        raise HTTPException(400, "Invalid class_id")
+    await ensure_class_owned(db, current_user_id, class_uuid)
 
     res = await db.execute(
         select(StudentPitfall).where(
             StudentPitfall.user_id == current_user_id,
-            StudentPitfall.class_id == UUID(class_id)
+            StudentPitfall.class_id == class_uuid
         )
     )
 
@@ -1763,7 +1796,11 @@ async def practice_pitfall(
     if not pitfall or not class_id:
         raise HTTPException(400, "pitfall and class_id required")
 
-    class_uuid = UUID(class_id)
+    try:
+        class_uuid = UUID(class_id)
+    except:
+        raise HTTPException(400, "Invalid class_id")
+    await ensure_class_owned(db, current_user_id, class_uuid)
 
     print("\n🎯 PRACTICE MODE:", pitfall)
 
@@ -1893,7 +1930,11 @@ async def clear_pitfalls(
     if not class_id:
         raise HTTPException(400, "class_id required")
 
-    class_uuid = UUID(class_id)
+    try:
+        class_uuid = UUID(class_id)
+    except:
+        raise HTTPException(400, "Invalid class_id")
+    await ensure_class_owned(db, current_user_id, class_uuid)
 
     await db.execute(
         StudentPitfall.__table__.delete().where(
@@ -1913,11 +1954,17 @@ async def get_chat_history(
     db: AsyncSession = Depends(get_db),
     current_user_id: str = Depends(get_current_user_id)
 ):
+    try:
+        class_uuid = UUID(class_id)
+    except:
+        raise HTTPException(400, "Invalid class_id")
+    await ensure_class_owned(db, current_user_id, class_uuid)
+
     res = await db.execute(
         select(ChatMemory.role, ChatMemory.content)
         .where(
             ChatMemory.user_id == current_user_id,
-            ChatMemory.class_id == UUID(class_id)
+            ChatMemory.class_id == class_uuid
         )
         .order_by(ChatMemory.created_at.asc())
     )
