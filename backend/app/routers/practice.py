@@ -239,7 +239,11 @@ async def _cross_concept_weakness(
         concepts = []
         if concept_ids:
             cres = await db.execute(
-                select(Concept).where(Concept.id.in_(concept_ids))
+                select(Concept).where(
+                    Concept.user_id == user_id,
+                    Concept.class_id == class_id,
+                    Concept.id.in_(concept_ids),
+                )
             )
             c_map = {c.id: c for c in cres.scalars().all()}
             for cid, ccount in concept_rows:
@@ -579,6 +583,17 @@ async def submit_attempt(question_id: UUID, payload: AttemptIn, db: AsyncSession
     if not q:
         raise HTTPException(404, "Question not found")
 
+    if payload.session_id:
+        session_res = await db.execute(
+            select(ExamSession).where(
+                ExamSession.id == payload.session_id,
+                ExamSession.user_id == user_id,
+                ExamSession.class_id == q.class_id,
+            )
+        )
+        if not session_res.scalar_one_or_none():
+            raise HTTPException(404, "Exam session not found")
+
     attempt = Attempt(
         user_id=user_id,
         question_id=q.id,
@@ -713,7 +728,13 @@ async def submit_attempt(question_id: UUID, payload: AttemptIn, db: AsyncSession
         # Auto-generate remedial if repeated failures
         if recent_failures >= 3 and q.concept_id:
 
-            weak_concept = await db.get(Concept, q.concept_id)
+            weak_concept_res = await db.execute(
+                select(Concept).where(
+                    Concept.id == q.concept_id,
+                    Concept.user_id == user_id,
+                )
+            )
+            weak_concept = weak_concept_res.scalar_one_or_none()
 
             if weak_concept:
                 concept_payload = [{
@@ -839,7 +860,7 @@ async def grade_steps(
     user_id: UUID = Depends(get_current_user_id)
 ):
 
-    qres = await db.execute(select(Question).where(Question.id == question_id))
+    qres = await db.execute(select(Question).where(Question.id == question_id, Question.user_id == user_id))
     q = qres.scalar_one_or_none()
     memres = await db.execute(
         select(TutorMemory.note)
@@ -881,8 +902,12 @@ async def tutor_ask(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id)
 ):
-    qres = await db.execute(select(Question).where(Question.id == question_id))
+    qres = await db.execute(select(Question).where(Question.id == question_id, Question.user_id == user_id))
     q = qres.scalar_one_or_none()
+
+    if not q or not q.question_json:
+        raise HTTPException(404, "Question not found")
+
     memres = await db.execute(
         select(TutorMemory.note)
         .where(TutorMemory.user_id == user_id)
@@ -899,9 +924,6 @@ async def tutor_ask(
         top_tags=5,
         top_concepts_per_tag=5
     )
-
-    if not q or not q.question_json:
-        raise HTTPException(404, "Question not found")
 
     resp = client.chat.completions.create(
         model="gpt-4.1",
@@ -944,6 +966,7 @@ async def mistake_heatmap(
         FROM mistake_logs ml
         JOIN concepts c ON c.id = ml.concept_id
         WHERE c.class_id = :cid
+        AND c.user_id = :uid
         AND ml.user_id = :uid
         GROUP BY concept_id
         ORDER BY cnt DESC
@@ -993,9 +1016,15 @@ async def tag_frequency(
 async def next_step(
     question_id: UUID,
     step_index: int,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id)
 ):
-    q = (await db.execute(select(Question).where(Question.id==question_id))).scalar_one()
+    q = (await db.execute(
+        select(Question).where(Question.id == question_id, Question.user_id == user_id)
+    )).scalar_one_or_none()
+
+    if not q:
+        raise HTTPException(404, "Question not found")
 
     path = q.question_json.get("reasoning_path", [])
 
@@ -1014,10 +1043,14 @@ async def check_step(
     question_id: UUID,
     payload: CheckStepIn,
     db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
 ):
     q = (await db.execute(
-        select(Question).where(Question.id == question_id)
-    )).scalar_one()
+        select(Question).where(Question.id == question_id, Question.user_id == user_id)
+    )).scalar_one_or_none()
+
+    if not q:
+        raise HTTPException(404, "Question not found")
 
     expected = q.question_json.get("reasoning_path", [])
 
@@ -1055,10 +1088,14 @@ async def why_wrong(
     question_id: UUID,
     payload: WhyWrongIn,
     db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
 ):
     q = (await db.execute(
-        select(Question).where(Question.id == question_id)
-    )).scalar_one()
+        select(Question).where(Question.id == question_id, Question.user_id == user_id)
+    )).scalar_one_or_none()
+
+    if not q:
+        raise HTTPException(404, "Question not found")
 
     mistakes = q.question_json.get("common_mistakes", [])
 
@@ -1089,10 +1126,14 @@ async def next_hint(
     question_id: UUID,
     hint_level: int = 1,
     db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
 ):
     q = (await db.execute(
-        select(Question).where(Question.id == question_id)
-    )).scalar_one()
+        select(Question).where(Question.id == question_id, Question.user_id == user_id)
+    )).scalar_one_or_none()
+
+    if not q:
+        raise HTTPException(404, "Question not found")
 
     reasoning = q.question_json.get("reasoning_path", [])
 
@@ -1151,11 +1192,15 @@ async def knowledge_graph(
     misres = await db.execute(
         text("""
         SELECT concept_id, COUNT(*)::int AS cnt
-        FROM mistake_logs
-        WHERE user_id = :u AND concept_id IS NOT NULL
+        FROM mistake_logs ml
+        JOIN concepts c ON c.id = ml.concept_id
+        WHERE ml.user_id = :u
+          AND c.user_id = :u
+          AND c.class_id = :cid
+          AND ml.concept_id IS NOT NULL
         GROUP BY concept_id
         """),
-        {"u": user_id}
+        {"u": user_id, "cid": class_id}
     )
     mistake_count_map = {row[0]: int(row[1]) for row in misres.fetchall()}
 
@@ -1163,13 +1208,16 @@ async def knowledge_graph(
     tagres = await db.execute(
         text("""
         SELECT concept_id, tag, COUNT(*)::int AS cnt
-        FROM mistake_logs
-        WHERE user_id = :u
-          AND concept_id IS NOT NULL
-          AND tag IS NOT NULL
+        FROM mistake_logs ml
+        JOIN concepts c ON c.id = ml.concept_id
+        WHERE ml.user_id = :u
+          AND c.user_id = :u
+          AND c.class_id = :cid
+          AND ml.concept_id IS NOT NULL
+          AND ml.tag IS NOT NULL
         GROUP BY concept_id, tag
         """),
-        {"u": user_id}
+        {"u": user_id, "cid": class_id}
     )
     tag_rows = tagres.fetchall()
 
@@ -1310,7 +1358,7 @@ async def get_latest_practice(
     # fetch questions
     qres = await db.execute(
         select(Question)
-        .where(Question.practice_set_id == ps.id)
+        .where(Question.practice_set_id == ps.id, Question.user_id == user_id)
     )
 
     qs = qres.scalars().all()
@@ -1362,7 +1410,13 @@ async def grade_flashcard(
     user_id: UUID = Depends(get_current_user_id)
 ):
 
-    card = await db.get(Flashcard, data["flashcard_id"])
+    card_res = await db.execute(
+        select(Flashcard).where(
+            Flashcard.id == data["flashcard_id"],
+            Flashcard.user_id == user_id,
+        )
+    )
+    card = card_res.scalar_one_or_none()
 
     if not card:
         raise HTTPException(404, "Card not found")

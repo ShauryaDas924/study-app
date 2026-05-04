@@ -3,8 +3,9 @@
 import { Card, CardHeader } from "@/components/ui/Card";
 import StudyPlanGenerator from "@/components/StudyPlanGenerator";
 import WeeklyPlanGenerator from "@/components/WeeklyPlanGenerator";
+import RequireAuth from "@/components/RequireAuth";
 
-export default function PlannerPage() {
+function PlannerContent() {
   return (
     <div className="py-7 space-y-6">
       <div>
@@ -24,5 +25,13 @@ export default function PlannerPage() {
         <WeeklyPlanGenerator />
       </Card>
     </div>
+  );
+}
+
+export default function PlannerPage() {
+  return (
+    <RequireAuth>
+      <PlannerContent />
+    </RequireAuth>
   );
 }

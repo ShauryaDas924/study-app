@@ -1,26 +1,15 @@
-const BASE_URL = "http://localhost:8000";
-
-/**
- * Assumption: authenticated user.
- * Replace getAuthToken() with your real auth integration.
- */
-function getAuthToken(): string {
-  // Required placeholder per your instruction (“Include auth header placeholder”)
-  return "REPLACE_WITH_REAL_TOKEN";
-}
-
-function headers(extra?: HeadersInit): HeadersInit {
-  return {
-    Authorization: `Bearer ${getAuthToken()}`,
-    "Content-Type": "application/json",
-    ...(extra || {}),
-  };
-}
+import { authFetch } from "@/lib/auth";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const requestHeaders = new Headers(init?.headers);
+
+  if (!requestHeaders.has("Content-Type")) {
+    requestHeaders.set("Content-Type", "application/json");
+  }
+
+  const res = await authFetch(path, {
     ...init,
-    headers: headers(init?.headers),
+    headers: requestHeaders,
     cache: "no-store",
   });
 
@@ -321,19 +310,23 @@ export const api = {
   // health
   health: () => request<HealthResponse>("/health"),
 
-listClasses: () =>
-  request<{ id: UUID; name: string; term?: string }[]>("/classes"),
+  listClasses: () =>
+    request<{ id: UUID; name: string; term?: string }[]>("/classes"),
 
-createClass: (body: { name: string; term?: string }) =>
-  request<{ id: UUID; name: string; term?: string }>("/classes", {
-    method: "POST",
-    body: JSON.stringify(body),
-  }),
-clearClass: (classId: UUID) =>
-  request<{ message: string }>(
-    `/classes/${classId}/clear`,
-    { method: "DELETE" }
-  ),
+  createClass: (body: { name: string; term?: string }) =>
+    request<{ id: UUID; name: string; term?: string }>("/classes", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  clearClass: (classId: UUID) =>
+    request<{ message: string }>(
+      `/classes/${classId}/clear`,
+      { method: "DELETE" }
+    ),
+
+  deleteClass: (classId: UUID) =>
+    request<{ message: string }>(`/classes/${classId}`, { method: "DELETE" }),
 
   // notes
   createNote: (body: NoteCreateIn) =>
@@ -385,6 +378,9 @@ clearClass: (classId: UUID) =>
   nextHint: (questionId: UUID, hintLevel: 1 | 2 | 3) =>
     request<HintOut>(`/practice/questions/${questionId}/next-hint?hint_level=${hintLevel}`),
 
+  getHint: (questionId: UUID, hintLevel: 1 | 2 | 3) =>
+    request<HintOut>(`/practice/questions/${questionId}/next-hint?hint_level=${hintLevel}`),
+
   tutorAsk: (questionId: UUID, body: TutorAskIn) =>
     request<TutorAskOut>(`/practice/questions/${questionId}/ask`, {
       method: "POST",
@@ -399,8 +395,13 @@ clearClass: (classId: UUID) =>
     request<ExamReportOut>(`/practice/exam/${sessionId}/report`),
 
   // readiness
-  readiness: (classId: UUID) =>
-    request<ReadinessOut>(`/practice/classes/${classId}/readiness`),
+  readiness: (classId: UUID) => {
+    if (!classId) {
+      return Promise.resolve({ readiness_percent: 0, weak_concepts: [] });
+    }
+
+    return request<ReadinessOut>(`/practice/classes/${classId}/readiness`);
+  },
 
   // analytics
   mistakeHeatmap: (classId: UUID) =>

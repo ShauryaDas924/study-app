@@ -1,7 +1,7 @@
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from pydantic import BaseModel
 from uuid import UUID
 from sqlalchemy import delete
@@ -17,6 +17,7 @@ from app.models import (
     NoteConcept,
     Flashcard,
     FlashcardState,
+    FlashcardSession,
     Class,
     Attempt,
     MistakeLog,
@@ -28,6 +29,10 @@ from app.models import (
     StudentPitfall,
     WorkReviewSession,
     StepReview,
+    Exam,
+    ExamInsight,
+    ExamSession,
+    MasteryHistory,
 )
 router = APIRouter(prefix="/classes", tags=["classes"])
 
@@ -55,6 +60,12 @@ async def clear_class_data(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
+    class_res = await db.execute(
+        select(Class.id).where(Class.id == class_id, Class.user_id == user_id)
+    )
+    if not class_res.scalar_one_or_none():
+        raise HTTPException(404, "Class not found")
+
     # -----------------------------
     # 0. Get concept IDs
     # -----------------------------
@@ -224,3 +235,183 @@ async def clear_class_data(
     await db.commit()
 
     return {"message": "Class data cleared"}
+
+
+@router.delete("/{class_id}")
+async def delete_class(
+    class_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
+):
+    class_res = await db.execute(
+        select(Class.id).where(Class.id == class_id, Class.user_id == user_id)
+    )
+    if not class_res.scalar_one_or_none():
+        raise HTTPException(404, "Class not found")
+
+    note_res = await db.execute(
+        select(Note.id).where(Note.user_id == user_id, Note.class_id == class_id)
+    )
+    note_ids = [r[0] for r in note_res.fetchall()]
+
+    concept_res = await db.execute(
+        select(Concept.id).where(Concept.user_id == user_id, Concept.class_id == class_id)
+    )
+    concept_ids = [r[0] for r in concept_res.fetchall()]
+
+    question_res = await db.execute(
+        select(Question.id).where(Question.user_id == user_id, Question.class_id == class_id)
+    )
+    question_ids = [r[0] for r in question_res.fetchall()]
+
+    exam_session_res = await db.execute(
+        select(ExamSession.id).where(
+            ExamSession.user_id == user_id,
+            ExamSession.class_id == class_id,
+        )
+    )
+    exam_session_ids = [r[0] for r in exam_session_res.fetchall()]
+
+    await db.execute(
+        delete(FlashcardSession).where(
+            FlashcardSession.user_id == user_id,
+            FlashcardSession.note_id.in_(note_ids),
+        )
+    )
+    await db.execute(
+        delete(FlashcardState).where(
+            FlashcardState.user_id == user_id,
+            FlashcardState.concept_id.in_(concept_ids),
+        )
+    )
+    await db.execute(
+        delete(Flashcard).where(
+            Flashcard.user_id == user_id,
+            or_(
+                Flashcard.class_id == class_id,
+                Flashcard.note_id.in_(note_ids),
+                Flashcard.concept_id.in_(concept_ids),
+            ),
+        )
+    )
+    await db.execute(
+        delete(Mastery).where(
+            Mastery.user_id == user_id,
+            Mastery.concept_id.in_(concept_ids),
+        )
+    )
+    await db.execute(
+        delete(MasteryHistory).where(
+            MasteryHistory.user_id == user_id,
+            MasteryHistory.concept_id.in_(concept_ids),
+        )
+    )
+    await db.execute(
+        delete(Attempt).where(
+            Attempt.user_id == user_id,
+            or_(
+                Attempt.question_id.in_(question_ids),
+                Attempt.session_id.in_(exam_session_ids),
+                Attempt.concept_id.in_(concept_ids),
+            ),
+        )
+    )
+    await db.execute(
+        delete(MistakeLog).where(
+            MistakeLog.user_id == user_id,
+            MistakeLog.concept_id.in_(concept_ids),
+        )
+    )
+    await db.execute(
+        delete(Question).where(
+            Question.user_id == user_id,
+            Question.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(PracticeSet).where(
+            PracticeSet.user_id == user_id,
+            PracticeSet.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(TutorMemory).where(
+            TutorMemory.user_id == user_id,
+            TutorMemory.concept_id.in_(concept_ids),
+        )
+    )
+    await db.execute(
+        delete(ChatMemory).where(
+            ChatMemory.user_id == user_id,
+            ChatMemory.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(StudentPitfall).where(
+            StudentPitfall.user_id == user_id,
+            StudentPitfall.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(StepReview).where(
+            StepReview.user_id == user_id,
+            StepReview.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(WorkReviewSession).where(
+            WorkReviewSession.user_id == user_id,
+            WorkReviewSession.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(ExamInsight).where(
+            ExamInsight.user_id == user_id,
+            ExamInsight.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(Exam).where(
+            Exam.user_id == user_id,
+            Exam.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(ExamSession).where(
+            ExamSession.user_id == user_id,
+            ExamSession.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(ConceptDependency).where(
+            or_(
+                ConceptDependency.concept_id.in_(concept_ids),
+                ConceptDependency.depends_on_concept_id.in_(concept_ids),
+            )
+        )
+    )
+    await db.execute(
+        delete(NoteConcept).where(
+            or_(
+                NoteConcept.note_id.in_(note_ids),
+                NoteConcept.concept_id.in_(concept_ids),
+            )
+        )
+    )
+    await db.execute(
+        delete(Concept).where(
+            Concept.user_id == user_id,
+            Concept.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(Note).where(
+            Note.user_id == user_id,
+            Note.class_id == class_id,
+        )
+    )
+    await db.execute(delete(Class).where(Class.id == class_id, Class.user_id == user_id))
+
+    await db.commit()
+
+    return {"message": "Class deleted"}

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useStore } from "@/store/useStore";
+import { authFetch } from "@/lib/auth";
 
 export default function UploadNotes({
   onExtracted,
@@ -31,7 +32,7 @@ export default function UploadNotes({
       form.append("class_id", String(selectedClassId));
       form.append("mode", "normal"); // old grey upload button now defaults to normal extraction
 
-      const res = await fetch("http://localhost:8000/upload/notes", {
+      const res = await authFetch("/upload/notes", {
         method: "POST",
         body: form,
       });

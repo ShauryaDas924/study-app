@@ -21,9 +21,11 @@ async def get_current_user_id(authorization: str | None = Header(default=None)) 
         raise HTTPException(status_code=401, detail="Missing Bearer token")
 
     token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
 
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-        raise HTTPException(status_code=500, detail="Supabase auth env vars missing")
+        raise HTTPException(status_code=500, detail="Auth is not configured")
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -42,11 +44,11 @@ async def get_current_user_id(authorization: str | None = Header(default=None)) 
         user_id = data.get("id")
 
         if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid auth user")
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
 
         return UUID(user_id)
 
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Could not verify token: {str(e)}")
+    except (httpx.HTTPError, ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")

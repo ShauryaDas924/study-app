@@ -5,9 +5,10 @@ from app.db import get_db
 from app.services.file_extraction import extract_text
 from app.services.auth import get_current_user_id
 from app.jobs.concept_jobs import concept_extraction_job
-from app.models import Note
+from app.models import Class, Note
 from uuid import UUID
 from datetime import datetime, timezone
+from sqlalchemy import select
 router = APIRouter(prefix="/upload", tags=["upload"])
 
 class StepTimer:
@@ -35,6 +36,12 @@ async def upload_note(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
+    class_res = await db.execute(
+        select(Class.id).where(Class.id == class_id, Class.user_id == user_id)
+    )
+    if not class_res.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Class not found")
+
     with StepTimer("read_uploaded_file", {"filename": file.filename}):
         content = await file.read()
 

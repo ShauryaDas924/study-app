@@ -6,7 +6,7 @@ from sqlalchemy import select
 from uuid import UUID
 from app.services.llm import client, kimi_client
 from app.db import get_db
-from app.models import Concept, ExamInsight
+from app.models import Class, Concept, ExamInsight
 from fastapi import Form
 from app.services.llm import top_k_concepts
 
@@ -30,6 +30,12 @@ async def analyze_exam(
         class_uuid = UUID(class_id)
     except:
         raise HTTPException(400, "Invalid class_id")
+
+    class_res = await db.execute(
+        select(Class.id).where(Class.id == class_uuid, Class.user_id == current_user_id)
+    )
+    if not class_res.scalar_one_or_none():
+        raise HTTPException(404, "Class not found")
 
     content = await file.read()
 
@@ -397,7 +403,16 @@ async def get_exam_insights(
     current_user_id: str = Depends(get_current_user_id)
 ):
 
-    class_uuid = UUID(class_id)
+    try:
+        class_uuid = UUID(class_id)
+    except:
+        raise HTTPException(400, "Invalid class_id")
+
+    class_res = await db.execute(
+        select(Class.id).where(Class.id == class_uuid, Class.user_id == current_user_id)
+    )
+    if not class_res.scalar_one_or_none():
+        raise HTTPException(404, "Class not found")
 
     res = await db.execute(
         select(ExamInsight)

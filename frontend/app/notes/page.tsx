@@ -9,8 +9,10 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import UploadNotes from "@/components/UploadNotes";
 import NoteEditor from "@/components/NoteEditor";
+import { authFetch } from "@/lib/auth";
+import RequireAuth from "@/components/RequireAuth";
 
-export default function NotesPage() {
+function NotesContent() {
   const classId = useStore((s) => s.selectedClassId);
   const qc = useQueryClient();
 
@@ -124,7 +126,7 @@ useEffect(() => {
   const fetchConcepts = () => {
     if (!classId) return;
 
-    fetch(`http://localhost:8000/notes/concepts/by-class/${classId}`, {
+    authFetch(`/notes/concepts/by-class/${classId}`, {
       credentials: "include",
     })
       .then((r) => r.json())
@@ -143,7 +145,7 @@ useEffect(() => {
   const fetchDBFlashcards = () => {
     if (!classId) return;
 
-    fetch(`http://localhost:8000/notes/flashcards/by-class/${classId}`, {
+    authFetch(`/notes/flashcards/by-class/${classId}`, {
       credentials: "include",
     })
       .then((r) => r.json())
@@ -449,5 +451,13 @@ useEffect(() => {
         )}
       </Card>
     </div>
+  );
+}
+
+export default function NotesPage() {
+  return (
+    <RequireAuth>
+      <NotesContent />
+    </RequireAuth>
   );
 }

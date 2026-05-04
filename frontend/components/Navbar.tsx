@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import ClassSelector from "@/components/ClassSelector";
 import { api } from "@/lib/api";
+import { supabase } from "@/lib/supabaseClient";
 
 const items = [
   { href: "/dashboard", label: "Dashboard" },
@@ -166,6 +167,13 @@ function GlobalExtractionProgress() {
 
 export default function Navbar() {
   const path = usePathname();
+  const router = useRouter();
+  const isLogin = path === "/login";
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  }
 
   return (
     <header
@@ -175,30 +183,64 @@ export default function Navbar() {
         borderColor: "rgba(231, 218, 203, 0.9)",
       }}
     >
-      <div className="mx-auto max-w-6xl px-5 py-4 flex items-center justify-between gap-6">
-        <div className="flex items-center gap-3">
-          <div
-            className="h-9 w-9 rounded-2xl flex items-center justify-center font-semibold"
-            style={{
-              background: "var(--gradient-main)",
-              color: "var(--text-main)",
-              boxShadow: "var(--shadow-button)",
-            }}
-          >
-            T
-          </div>
+          <div className="mx-auto max-w-7xl px-5 py-4 flex items-center justify-between gap-5">
+          <div className="flex items-center gap-4">
+            {!isLogin && (
+              <button
+                className="rounded-xl border px-3 py-2 text-sm transition"
+                style={{
+                  background: "rgba(255,255,255,0.68)",
+                  borderColor: "var(--border-soft)",
+                  color: "var(--text-soft)",
+                }}
+                onClick={handleLogout}
+              >
+                Logout
+              </button>
+            )}
 
-          <div>
-            <div className="font-semibold leading-tight" style={{ color: "var(--text-main)" }}>
-              Study Tutor
+          <Link href="/dashboard" className="flex items-center gap-3 group">
+            <div
+              className="relative h-10 w-10 shrink-0 rounded-2xl flex items-center justify-center overflow-hidden"
+              style={{
+                background:
+                  "linear-gradient(135deg, rgba(247,167,195,0.95) 0%, rgba(246,223,139,0.95) 52%, rgba(191,216,184,0.95) 100%)",
+                boxShadow: "0 14px 35px rgba(247, 167, 195, 0.28)",
+                border: "1px solid rgba(231, 218, 203, 0.9)",
+              }}
+            >
+              <div
+                className="absolute inset-0 opacity-60"
+                style={{
+                  background:
+                    "radial-gradient(circle at 30% 25%, rgba(255,255,255,0.95), transparent 34%)",
+                }}
+              />
+              <span
+                className="relative text-[13px] font-black tracking-[-0.08em]"
+                style={{ color: "var(--text-main)" }}
+              >
+                ST
+              </span>
             </div>
-            <div className="text-xs" style={{ color: "var(--text-soft)" }}>
-              Calm AI tutoring for deep work
-            </div>
-          </div>
-        </div>
 
-        <nav className="hidden md:flex items-center gap-1">
+            <div className="leading-none">
+              <div
+                className="text-[17px] font-black tracking-[-0.04em]"
+                style={{ color: "var(--text-main)" }}
+              >
+                StudyOS
+              </div>
+              <div
+                className="mt-1 text-[10px] font-medium tracking-[0.16em] uppercase"
+                style={{ color: "var(--text-soft)" }}
+              >
+                AI Workspace
+              </div>
+            </div>
+          </Link>
+
+        {!isLogin && <nav className="hidden md:flex items-center gap-1">
           {items.map((it) => {
             const active = path?.startsWith(it.href);
 
@@ -223,22 +265,27 @@ export default function Navbar() {
               </Link>
             );
           })}
-        </nav>
+        </nav>}
 
-        <div className="hidden lg:block">
+        {!isLogin && <div className="hidden lg:block">
           <GlobalExtractionProgress />
-        </div>
+        </div>}
 
-        <div className="w-[220px]">
-          <ClassSelector />
+          {!isLogin && (
+            <div className="flex w-[120px] items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <ClassSelector />
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="lg:hidden px-5 pb-3">
+      {!isLogin && <div className="lg:hidden px-5 pb-3">
         <GlobalExtractionProgress />
-      </div>
+      </div>}
 
-      <div className="md:hidden px-5 pb-3 flex flex-wrap gap-2">
+      {!isLogin && <div className="md:hidden px-5 pb-3 flex flex-wrap gap-2">
         {items.map((it) => {
           const active = path?.startsWith(it.href);
 
@@ -266,7 +313,7 @@ export default function Navbar() {
             </Link>
           );
         })}
-      </div>
+      </div>}
     </header>
   );
 }

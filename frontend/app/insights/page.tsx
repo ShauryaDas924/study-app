@@ -6,8 +6,10 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { useStore } from "@/store/useStore";
+import { authFetch } from "@/lib/auth";
+import RequireAuth from "@/components/RequireAuth";
 
-export default function InsightsPage(){
+function InsightsContent(){
 
 const classId = useStore(s => s.selectedClassId)
 
@@ -21,8 +23,8 @@ if(!classId) return
 
 async function loadSaved(){
 
-const res = await fetch(
-`http://localhost:8000/performance/insights/${classId}`
+const res = await authFetch(
+`/performance/insights/${classId}`
 )
 
 const data = await res.json()
@@ -58,8 +60,8 @@ const form = new FormData()
 form.append("file",file)
 form.append("class_id",classId)
 
-const res = await fetch(
-"http://localhost:8000/performance/analyze-exam",
+const res = await authFetch(
+"/performance/analyze-exam",
 {
 method:"POST",
 body:form
@@ -191,6 +193,14 @@ rehypePlugins={[[rehypeKatex, { strict: false }]]}
 
 </div>
 
-)
+	)
 
+	}
+
+export default function InsightsPage() {
+return (
+<RequireAuth>
+<InsightsContent />
+</RequireAuth>
+)
 }

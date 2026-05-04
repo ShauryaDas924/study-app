@@ -7,4 +7,8 @@ pydantic
 openai
 jsonschema
 python-dateutil
+<<<<<<< HEAD
 pgvector
+=======
+httpx
+>>>>>>> 0a00f736fe44150b89c64fa08978572dcaba8fa0
