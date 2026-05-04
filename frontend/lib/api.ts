@@ -310,19 +310,23 @@ export const api = {
   // health
   health: () => request<HealthResponse>("/health"),
 
-listClasses: () =>
-  request<{ id: UUID; name: string; term?: string }[]>("/classes"),
+  listClasses: () =>
+    request<{ id: UUID; name: string; term?: string }[]>("/classes"),
 
-createClass: (body: { name: string; term?: string }) =>
-  request<{ id: UUID; name: string; term?: string }>("/classes", {
-    method: "POST",
-    body: JSON.stringify(body),
-  }),
-clearClass: (classId: UUID) =>
-  request<{ message: string }>(
-    `/classes/${classId}/clear`,
-    { method: "DELETE" }
-  ),
+  createClass: (body: { name: string; term?: string }) =>
+    request<{ id: UUID; name: string; term?: string }>("/classes", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  clearClass: (classId: UUID) =>
+    request<{ message: string }>(
+      `/classes/${classId}/clear`,
+      { method: "DELETE" }
+    ),
+
+  deleteClass: (classId: UUID) =>
+    request<{ message: string }>(`/classes/${classId}`, { method: "DELETE" }),
 
   // notes
   createNote: (body: NoteCreateIn) =>
