@@ -261,305 +261,6 @@ function NotePreview({ text }: { text?: string }) {
   );
 }
 
-function formatConceptName(name?: string) {
-  if (!name) return "Untitled Concept";
-
-  return name
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function getConceptTone(concept: any, index: number) {
-  const text = `${concept?.name ?? ""} ${concept?.description ?? ""}`.toLowerCase();
-
-  if (
-    text.includes("primary key") ||
-    text.includes("foreign key") ||
-    text.includes("key")
-  ) {
-    return {
-      label: "Keys",
-      icon: "🔑",
-      color: "#7b5cff",
-      bg: "rgba(123, 92, 255, 0.08)",
-      border: "rgba(123, 92, 255, 0.26)",
-      chipBg: "rgba(123, 92, 255, 0.12)",
-    };
-  }
-
-  if (
-    text.includes("cardinality") ||
-    text.includes("relationship") ||
-    text.includes("entity relationship") ||
-    text.includes("erd") ||
-    text.includes("erm")
-  ) {
-    return {
-      label: "Relationships",
-      icon: "🔗",
-      color: "#4d7c8a",
-      bg: "rgba(77, 124, 138, 0.08)",
-      border: "rgba(77, 124, 138, 0.26)",
-      chipBg: "rgba(77, 124, 138, 0.12)",
-    };
-  }
-
-  if (
-    text.includes("attribute") ||
-    text.includes("entity") ||
-    text.includes("record") ||
-    text.includes("table") ||
-    text.includes("column")
-  ) {
-    return {
-      label: "Structure",
-      icon: "🧱",
-      color: "var(--accent-pink-strong)",
-      bg: "rgba(247, 167, 195, 0.12)",
-      border: "rgba(247, 167, 195, 0.34)",
-      chipBg: "rgba(247, 167, 195, 0.16)",
-    };
-  }
-
-  if (
-    text.includes("normalization") ||
-    text.includes("integrity") ||
-    text.includes("redundancy") ||
-    text.includes("anomal")
-  ) {
-    return {
-      label: "Data Quality",
-      icon: "✅",
-      color: "var(--accent-green-strong)",
-      bg: "rgba(191, 216, 184, 0.16)",
-      border: "rgba(191, 216, 184, 0.45)",
-      chipBg: "rgba(191, 216, 184, 0.22)",
-    };
-  }
-
-  if (
-    text.includes("sql") ||
-    text.includes("null") ||
-    text.includes("operator") ||
-    text.includes("syntax")
-  ) {
-    return {
-      label: "SQL",
-      icon: "💻",
-      color: "#9a6a00",
-      bg: "rgba(246, 223, 139, 0.18)",
-      border: "rgba(246, 223, 139, 0.58)",
-      chipBg: "rgba(246, 223, 139, 0.26)",
-    };
-  }
-
-  if (
-    text.includes("database") ||
-    text.includes("dbms") ||
-    text.includes("spreadsheet") ||
-    text.includes("metadata")
-  ) {
-    return {
-      label: "Database Basics",
-      icon: "🗂️",
-      color: "#b44b62",
-      bg: "rgba(255, 215, 223, 0.28)",
-      border: "rgba(247, 167, 195, 0.42)",
-      chipBg: "rgba(255, 215, 223, 0.38)",
-    };
-  }
-
-  const fallbacks = [
-    {
-      label: "Core Concept",
-      icon: "✨",
-      color: "var(--accent-pink-strong)",
-      bg: "rgba(247, 167, 195, 0.10)",
-      border: "rgba(247, 167, 195, 0.30)",
-      chipBg: "rgba(247, 167, 195, 0.14)",
-    },
-    {
-      label: "Study Point",
-      icon: "🌿",
-      color: "var(--accent-green-strong)",
-      bg: "rgba(191, 216, 184, 0.14)",
-      border: "rgba(191, 216, 184, 0.36)",
-      chipBg: "rgba(191, 216, 184, 0.20)",
-    },
-    {
-      label: "Exam Idea",
-      icon: "⭐",
-      color: "#9a6a00",
-      bg: "rgba(246, 223, 139, 0.18)",
-      border: "rgba(246, 223, 139, 0.52)",
-      chipBg: "rgba(246, 223, 139, 0.24)",
-    },
-  ];
-
-  return fallbacks[index % fallbacks.length];
-}
-
-function SavedConceptsPreview({ concepts }: { concepts: any[] }) {
-  if (concepts.length === 0) {
-    return (
-      <div
-        className="rounded-3xl border p-6 text-sm"
-        style={{
-          background:
-            "linear-gradient(135deg, rgba(255,255,255,0.82), rgba(255,247,251,0.72))",
-          borderColor: "var(--border-soft)",
-          color: "var(--text-soft)",
-        }}
-      >
-        No concepts saved yet.
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="rounded-[2rem] border overflow-hidden"
-      style={{
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.94) 0%, rgba(255,248,251,0.84) 50%, rgba(248,255,247,0.84) 100%)",
-        borderColor: "var(--border-soft)",
-        boxShadow: "var(--shadow-card)",
-      }}
-    >
-      <div
-        className="px-5 py-4 border-b flex flex-col gap-3 md:flex-row md:items-center md:justify-between"
-        style={{
-          borderColor: "var(--border-soft)",
-          background:
-            "linear-gradient(90deg, rgba(247,167,195,0.15), rgba(246,223,139,0.15), rgba(191,216,184,0.15))",
-        }}
-      >
-        <div>
-          <div
-            className="text-xs uppercase tracking-[0.18em] font-semibold"
-            style={{ color: "var(--text-soft)" }}
-          >
-            Concept Library
-          </div>
-
-          <div
-            className="mt-1 text-lg font-semibold"
-            style={{ color: "var(--text-main)" }}
-          >
-            {concepts.length} saved concept{concepts.length === 1 ? "" : "s"}
-          </div>
-        </div>
-
-        <div
-          className="rounded-full px-4 py-2 text-xs font-semibold"
-          style={{
-            color: "var(--text-main)",
-            background: "rgba(255,255,255,0.68)",
-            border: "1px solid var(--border-soft)",
-          }}
-        >
-          Ready for practice + tutor grounding
-        </div>
-      </div>
-
-      <div className="p-5 grid md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {concepts.map((concept: any, index: number) => {
-          const tone = getConceptTone(concept, index);
-          const title = formatConceptName(concept.name);
-          const description =
-            concept.description ||
-            concept.evidence ||
-            concept.summary ||
-            "No description saved for this concept yet.";
-
-          return (
-            <article
-              key={concept.id ?? `${concept.name}-${index}`}
-              className="group rounded-3xl border p-5 transition"
-              style={{
-                background: tone.bg,
-                borderColor: tone.border,
-                boxShadow: "var(--shadow-soft)",
-              }}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div
-                  className="h-11 w-11 rounded-2xl flex items-center justify-center text-lg shrink-0"
-                  style={{
-                    background: "rgba(255,255,255,0.76)",
-                    border: `1px solid ${tone.border}`,
-                    boxShadow: "var(--shadow-soft)",
-                  }}
-                >
-                  {tone.icon}
-                </div>
-
-                <div
-                  className="rounded-full px-3 py-1 text-[11px] uppercase tracking-[0.12em] font-bold"
-                  style={{
-                    color: tone.color,
-                    background: tone.chipBg,
-                    border: `1px solid ${tone.border}`,
-                  }}
-                >
-                  {tone.label}
-                </div>
-              </div>
-
-              <div className="mt-4">
-                <h3
-                  className="text-base font-semibold leading-snug"
-                  style={{ color: "var(--text-main)" }}
-                >
-                  {title}
-                </h3>
-
-                <p
-                  className="mt-2 text-sm leading-relaxed"
-                  style={{ color: "var(--text-soft)" }}
-                >
-                  {description}
-                </p>
-              </div>
-
-              <div
-                className="mt-4 h-px"
-                style={{
-                  background:
-                    "linear-gradient(90deg, transparent, rgba(0,0,0,0.10), transparent)",
-                }}
-              />
-
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <div
-                  className="text-xs font-medium"
-                  style={{ color: "var(--text-soft)" }}
-                >
-                  Concept #{index + 1}
-                </div>
-
-                <div
-                  className="h-2 w-16 rounded-full overflow-hidden"
-                  style={{ background: "rgba(255,255,255,0.72)" }}
-                >
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      width: "72%",
-                      background: tone.color,
-                      opacity: 0.72,
-                    }}
-                  />
-                </div>
-              </div>
-            </article>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 function NotesContent() {
   const classId = useStore((s) => s.selectedClassId);
   const qc = useQueryClient();
@@ -645,20 +346,21 @@ useEffect(() => {
   }
 }, [noteQ.data]);
 
-    useEffect(() => {
-      const status = extractionStatusQ.data?.status;
+useEffect(() => {
+  const status = extractionStatusQ.data?.status;
 
-      if (status === "completed") {
-        qc.invalidateQueries({ queryKey: ["readiness", classId] });
-        qc.invalidateQueries({ queryKey: ["note", selectedNoteId] });
-        fetchConcepts();
-      }
+  if (status === "completed") {
+    qc.invalidateQueries({ queryKey: ["readiness", classId] });
+    qc.invalidateQueries({ queryKey: ["note", selectedNoteId] });
+    fetchConcepts();
+    fetchDBFlashcards();
+  }
 
-      if (status === "failed") {
-        localStorage.removeItem("activeExtractionMeta");
-        localStorage.removeItem("activeExtractionNoteId");
-      }
-    }, [extractionStatusQ.data?.status, classId, qc, selectedNoteId]);
+  if (status === "failed") {
+    localStorage.removeItem("activeExtractionMeta");
+    localStorage.removeItem("activeExtractionNoteId");
+  }
+}, [extractionStatusQ.data?.status, classId, qc, selectedNoteId]);
   /* ===============================
      EXTRACT CONCEPTS
   =============================== */
@@ -701,7 +403,7 @@ useEffect(() => {
       });
   };
 
-  //useEffect(fetchDBFlashcards, [classId]);
+  useEffect(fetchDBFlashcards, [classId]);
 
   /* ===============================
      MERGE + DEDUPE FLASHCARDS
@@ -796,7 +498,59 @@ useEffect(() => {
   disableCreate={!!selectedNoteId && !!uploadedText}
 />
 
-          
+          {/* ================= FLASHCARDS ================= */}
+          {allFlashcards.length > 0 && (
+            <div className="mt-6">
+              <div className="font-semibold text-lg mb-4" style={{ color: "var(--text-main)" }}>
+  📚 Flashcards
+</div>
+
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                {allFlashcards.map((c: any, i: number) => (
+                <div
+  key={i}
+  className="p-6 rounded-2xl border transition"
+  style={{
+    background:
+      "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(255,247,251,0.96) 52%, rgba(248,255,247,0.96) 100%)",
+    borderColor: "var(--border-soft)",
+    boxShadow: "var(--shadow-card)",
+  }}
+>
+  <div
+    className="text-xs uppercase font-semibold"
+    style={{ color: "var(--accent-pink-strong)" }}
+  >
+    Question
+  </div>
+
+  <div className="mt-2 font-medium" style={{ color: "var(--text-main)" }}>
+    {c.question}
+  </div>
+
+  <div
+    className="h-px my-4"
+    style={{
+      background:
+        "linear-gradient(90deg, rgba(247,167,195,0.55), rgba(246,223,139,0.55), rgba(191,216,184,0.55))",
+    }}
+  />
+
+  <div
+    className="text-xs uppercase font-semibold"
+    style={{ color: "var(--accent-green-strong)" }}
+  >
+    Answer
+  </div>
+
+  <div className="mt-2 text-sm" style={{ color: "var(--text-soft)" }}>
+    {c.answer}
+  </div>
+</div>
+                ))}
+              </div>
+            </div>
+          )}
         </Card>
 
         {/* ================= NOTES LIST ================= */}
@@ -904,15 +658,38 @@ useEffect(() => {
         )}
       </Card>
 
-          {/* ================= SAVED CONCEPTS ================= */}
-          <Card>
-            <CardHeader
-              title="Saved Concepts"
-              subtitle="Concepts persist across sessions and power practice, tutor help, and analytics."
-            />
+      {/* ================= SAVED CONCEPTS ================= */}
+      <Card>
+        <CardHeader
+          title="Saved Concepts"
+          subtitle="Concepts persist across sessions."
+        />
 
-            <SavedConceptsPreview concepts={concepts} />
-          </Card>
+        {concepts.length === 0 ? (
+          <div>No concepts saved yet.</div>
+        ) : (
+          <div className="space-y-3">
+            {concepts.map((c: any) => (
+              <div
+  key={c.id}
+  className="p-4 rounded-2xl border"
+  style={{
+    background: "rgba(255,255,255,0.74)",
+    borderColor: "var(--border-soft)",
+    boxShadow: "var(--shadow-soft)",
+  }}
+>
+  <div className="font-medium" style={{ color: "var(--text-main)" }}>
+    {c.name}
+  </div>
+  <div className="text-sm" style={{ color: "var(--text-soft)" }}>
+    {c.description}
+  </div>
+</div>
+            ))}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
