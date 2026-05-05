@@ -9,3 +9,9 @@ jsonschema
 python-dateutil
 httpx
 pgvector
+Pillow
+PyMuPDF
+python-pptx
+numpy
+json-repair
+python-multipart
