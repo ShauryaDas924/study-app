@@ -12,6 +12,47 @@ import RequireAuth from "@/components/RequireAuth";
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
+  grounding?: GroundingMetadata | null;
+};
+
+type GroundingConcept = {
+  id?: string | null;
+  name?: string | null;
+  concept_name?: string | null;
+  score?: number | null;
+  confidence?: number | null;
+};
+
+type GroundingMetadata = {
+  grounding_confidence?: number | null;
+  grounding_mode?: string | null;
+  concepts_used?: GroundingConcept[] | null;
+};
+
+type TutorResponse = GroundingMetadata & {
+  help?: string;
+  answer?: string;
+  response?: string;
+  message?: string;
+  review?: string;
+  response_markdown?: string;
+  detail?: string;
+  error?: string;
+};
+
+type UploadHelpResponse = {
+  questions?: string[];
+  count?: number;
+  detail?: string;
+  error?: string;
+};
+
+type ReviewWorkSessionCreateResponse = {
+  session_id?: string | null;
+  filename?: string | null;
+  extracted_text?: string | null;
+  detail?: string;
+  error?: string;
 };
 
 type ReviewSession = {
@@ -47,16 +88,98 @@ type ToolModal =
   | "history"
   | "sessions";
 
-function getAssistantText(data: any, fallback = "No response returned.") {
+function firstText(...values: Array<string | undefined | null>) {
+  return values.find((value) => typeof value === "string" && value.trim())?.trim();
+}
+
+function getAssistantText(data: TutorResponse, fallback = "No response returned.") {
   return (
-    data?.help ||
-    data?.answer ||
-    data?.response ||
-    data?.message ||
-    data?.review ||
-    data?.response_markdown ||
-    fallback
+    firstText(
+      data.help,
+      data.answer,
+      data.response,
+      data.message,
+      data.review,
+      data.response_markdown
+    ) || fallback
   );
+}
+
+function normalizeGroundingMode(mode?: string | null) {
+  if (!mode) return null;
+  const value = mode.toLowerCase();
+
+  if (value.includes("strong") || value.includes("grounded")) return "grounded";
+  if (value.includes("weak") || value.includes("general") || value.includes("no_context")) {
+    return "general";
+  }
+
+  return null;
+}
+
+function getConceptDisplayNames(concepts?: GroundingConcept[] | null) {
+  if (!Array.isArray(concepts)) return [];
+
+  const names = concepts
+    .map((concept) => firstText(concept.name, concept.concept_name))
+    .filter((name): name is string => Boolean(name));
+
+  return Array.from(new Set(names));
+}
+
+function formatGroundingConfidence(value?: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value) || value <= 0) return null;
+  const pct = Math.round(Math.max(0, Math.min(value, 1)) * 100);
+  return `Course match: ${pct}%`;
+}
+
+function getGroundingMetadata(data: TutorResponse): GroundingMetadata | null {
+  if (!normalizeGroundingMode(data.grounding_mode)) return null;
+
+  return {
+    grounding_confidence: data.grounding_confidence,
+    grounding_mode: data.grounding_mode,
+    concepts_used: Array.isArray(data.concepts_used) ? data.concepts_used : null,
+  };
+}
+
+function parseStoredMessages(raw: string | null): ChatMessage[] {
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as ChatMessage[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function preserveStoredGrounding(
+  serverMessages: ChatMessage[],
+  storedMessages: ChatMessage[]
+) {
+  const usedStoredIndexes = new Set<number>();
+
+  return serverMessages.map((message) => {
+    if (message.grounding || message.role !== "assistant") return message;
+
+    const storedIndex = storedMessages.findIndex((stored, index) => {
+      return (
+        !usedStoredIndexes.has(index) &&
+        stored.role === "assistant" &&
+        stored.content === message.content &&
+        Boolean(stored.grounding)
+      );
+    });
+
+    if (storedIndex === -1) return message;
+
+    usedStoredIndexes.add(storedIndex);
+    return {
+      ...message,
+      grounding: storedMessages[storedIndex].grounding,
+    };
+  });
 }
 
 function HomeworkContent() {
@@ -92,16 +215,7 @@ function HomeworkContent() {
   useEffect(() => {
     if (!classId) return;
 
-    const saved = localStorage.getItem(`chat_${classId}`);
-    if (saved) {
-      try {
-        setMessages(JSON.parse(saved));
-      } catch {
-        setMessages([]);
-      }
-    } else {
-      setMessages([]);
-    }
+    setMessages(parseStoredMessages(localStorage.getItem(`chat_${classId}`)));
   }, [classId]);
 
   useEffect(() => {
@@ -110,10 +224,12 @@ function HomeworkContent() {
 
       try {
         const res = await authFetch(`/homework/chat-history/${classId}`);
-        const data = await res.json();
+        const data = (await res.json()) as unknown;
 
         if (Array.isArray(data) && data.length > 0) {
-          setMessages(data);
+          const serverMessages = data as ChatMessage[];
+          const storedMessages = parseStoredMessages(localStorage.getItem(`chat_${classId}`));
+          setMessages(preserveStoredGrounding(serverMessages, storedMessages));
         }
       } catch {
         // Keep local messages if server history fails.
@@ -129,8 +245,8 @@ function HomeworkContent() {
 
       try {
         const res = await authFetch(`/homework/review-work-sessions/${classId}`);
-        const data = await res.json();
-        setReviewSessions(Array.isArray(data) ? data : []);
+        const data = (await res.json()) as unknown;
+        setReviewSessions(Array.isArray(data) ? (data as ReviewSession[]) : []);
       } catch {
         setReviewSessions([]);
       }
@@ -165,51 +281,109 @@ function HomeworkContent() {
     return t.trim();
   }
 
-  function AssistantMessage({ content }: { content: string }) {
+  function GroundingBadge({ grounding }: { grounding?: GroundingMetadata | null }) {
+    const mode = normalizeGroundingMode(grounding?.grounding_mode);
+    if (!mode) return null;
+
+    const isGrounded = mode === "grounded";
+    const conceptNames = getConceptDisplayNames(grounding?.concepts_used);
+    const visibleConcepts = conceptNames.slice(0, 3);
+    const hiddenCount = Math.max(0, conceptNames.length - visibleConcepts.length);
+    const confidence = isGrounded
+      ? formatGroundingConfidence(grounding?.grounding_confidence)
+      : null;
+
+    const subtext = isGrounded
+      ? visibleConcepts.length > 0
+        ? `${visibleConcepts.join(" · ")}${hiddenCount ? ` · +${hiddenCount} more` : ""}`
+        : "Course context used"
+      : "No strong match found in your uploaded notes.";
+
+    return (
+      <div
+        className="mb-3 rounded-2xl border px-3 py-2 text-xs"
+        style={{
+          background: isGrounded ? "var(--gradient-card)" : "rgba(255,255,255,0.72)",
+          borderColor: "var(--border-soft)",
+          boxShadow: "var(--shadow-soft)",
+          color: "var(--text-main)",
+        }}
+      >
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span
+            className="h-2 w-2 rounded-full"
+            style={{
+              background: isGrounded ? "var(--gradient-main)" : "rgba(95,89,96,0.38)",
+            }}
+          />
+          <span className="font-semibold">
+            {isGrounded ? "Using your course notes" : "General explanation"}
+          </span>
+          {confidence && (
+            <span style={{ color: "var(--text-soft)" }}>{confidence}</span>
+          )}
+        </div>
+        <div className="mt-1 leading-5" style={{ color: "var(--text-soft)" }}>
+          {subtext}
+        </div>
+      </div>
+    );
+  }
+
+  function AssistantMessage({
+    content,
+    grounding,
+  }: {
+    content: string;
+    grounding?: GroundingMetadata | null;
+  }) {
     const text = formatTutorText(content);
 
     return (
-      <div className="prose prose-slate themed-markdown max-w-none leading-7 break-words">
-        <ReactMarkdown
-          remarkPlugins={[remarkMath]}
-          rehypePlugins={[rehypeKatex]}
-          components={{
-            p: ({ children }) => <p className="mb-3 leading-7">{children}</p>,
-            pre: ({ children }) => (
-              <pre className="my-4 overflow-x-auto rounded-2xl bg-slate-50 p-4 text-sm leading-6">
-                {children}
-              </pre>
-            ),
-            code: ({ inline, children, ...props }: any) =>
-              inline ? (
-                <code className="rounded bg-slate-100 px-1 py-0.5 text-sm" {...props}>
+      <>
+        <GroundingBadge grounding={grounding} />
+        <div className="prose prose-slate themed-markdown max-w-none leading-7 break-words">
+          <ReactMarkdown
+            remarkPlugins={[remarkMath]}
+            rehypePlugins={[rehypeKatex]}
+            components={{
+              p: ({ children }) => <p className="mb-3 leading-7">{children}</p>,
+              pre: ({ children }) => (
+                <pre className="my-4 overflow-x-auto rounded-2xl bg-slate-50 p-4 text-sm leading-6">
                   {children}
-                </code>
-              ) : (
-                <code className="text-sm" {...props}>
-                  {children}
-                </code>
+                </pre>
               ),
-            ul: ({ children }) => <ul className="my-3 list-disc pl-6">{children}</ul>,
-            ol: ({ children }) => <ol className="my-3 list-decimal pl-6">{children}</ol>,
-            li: ({ children }) => <li className="mb-1">{children}</li>,
-            h1: ({ children }) => <h1 className="mb-3 text-xl font-semibold">{children}</h1>,
-            h2: ({ children }) => (
-              <h2 className="mt-5 mb-2 text-lg font-semibold">{children}</h2>
-            ),
-            h3: ({ children }) => (
-              <h3 className="mt-4 mb-2 text-base font-semibold">{children}</h3>
-            ),
-            blockquote: ({ children }) => (
-              <blockquote className="my-3 border-l-4 border-slate-300 pl-4 italic text-slate-700">
-                {children}
-              </blockquote>
-            ),
-          }}
-        >
-          {text}
-        </ReactMarkdown>
-      </div>
+              code: ({ inline, children, ...props }: any) =>
+                inline ? (
+                  <code className="rounded bg-slate-100 px-1 py-0.5 text-sm" {...props}>
+                    {children}
+                  </code>
+                ) : (
+                  <code className="text-sm" {...props}>
+                    {children}
+                  </code>
+                ),
+              ul: ({ children }) => <ul className="my-3 list-disc pl-6">{children}</ul>,
+              ol: ({ children }) => <ol className="my-3 list-decimal pl-6">{children}</ol>,
+              li: ({ children }) => <li className="mb-1">{children}</li>,
+              h1: ({ children }) => <h1 className="mb-3 text-xl font-semibold">{children}</h1>,
+              h2: ({ children }) => (
+                <h2 className="mt-5 mb-2 text-lg font-semibold">{children}</h2>
+              ),
+              h3: ({ children }) => (
+                <h3 className="mt-4 mb-2 text-base font-semibold">{children}</h3>
+              ),
+              blockquote: ({ children }) => (
+                <blockquote className="my-3 border-l-4 border-slate-300 pl-4 italic text-slate-700">
+                  {children}
+                </blockquote>
+              ),
+            }}
+          >
+            {text}
+          </ReactMarkdown>
+        </div>
+      </>
     );
   }
 
@@ -259,9 +433,9 @@ function HomeworkContent() {
         body: JSON.stringify({ class_id: classId, question }),
       });
 
-      let data: any = {};
+      let data: TutorResponse = {};
       try {
-        data = await res.json();
+        data = (await res.json()) as TutorResponse;
       } catch {
         data = {};
       }
@@ -277,9 +451,16 @@ function HomeworkContent() {
 
       const answer = getAssistantText(data);
 
-      setMessages((m) => [...m, { role: "assistant", content: answer }]);
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content: answer,
+          grounding: getGroundingMetadata(data),
+        },
+      ]);
       setQ("");
-    } catch (err: any) {
+    } catch {
       setMessages((m) => [
         ...m,
         {
@@ -299,8 +480,8 @@ function HomeworkContent() {
 
     try {
       const res = await authFetch(`/homework/step-review-history/${sid}`);
-      const data = await res.json();
-      setStepHistory(Array.isArray(data) ? data : []);
+      const data = (await res.json()) as unknown;
+      setStepHistory(Array.isArray(data) ? (data as StepHistoryItem[]) : []);
     } catch {
       setStepHistory([]);
     }
@@ -311,8 +492,8 @@ function HomeworkContent() {
 
     try {
       const res = await authFetch(`/homework/review-work-sessions/${classId}`);
-      const data = await res.json();
-      setReviewSessions(Array.isArray(data) ? data : []);
+      const data = (await res.json()) as unknown;
+      setReviewSessions(Array.isArray(data) ? (data as ReviewSession[]) : []);
     } catch {
       setReviewSessions([]);
     }
@@ -348,7 +529,7 @@ function HomeworkContent() {
         }),
       });
 
-      const data = await res.json();
+      const data = (await res.json()) as TutorResponse;
 
       if (!res.ok) {
         setMessages((m) => [
@@ -404,7 +585,7 @@ function HomeworkContent() {
         }
       );
 
-      const data = await res.json();
+      const data = (await res.json()) as UploadHelpResponse;
 
       if (!res.ok) {
         setMessages((m) => [
@@ -462,7 +643,7 @@ function HomeworkContent() {
         }
       );
 
-      const data = await res.json();
+      const data = (await res.json()) as TutorResponse;
 
       if (!res.ok) {
         setMessages((m) => [
@@ -518,7 +699,7 @@ function HomeworkContent() {
         }
       );
 
-      const data = await res.json();
+      const data = (await res.json()) as ReviewWorkSessionCreateResponse;
 
       if (!res.ok) {
         setMessages((m) => [
@@ -714,7 +895,7 @@ function HomeworkContent() {
                     }
                   >
                     {m.role === "assistant" ? (
-                      <AssistantMessage content={m.content} />
+                      <AssistantMessage content={m.content} grounding={m.grounding} />
                     ) : (
                       <div className="whitespace-pre-wrap break-words leading-7">
                         {m.content}
