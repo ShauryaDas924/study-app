@@ -26,6 +26,49 @@ from app.services.mastery import update_mastery_value
 
 router = APIRouter(prefix="/homework", tags=["homework"])
 
+HOMEWORK_RAG_TOP_K = 4
+MIN_HOMEWORK_GROUNDING_SCORE = 0.22
+MAX_HOMEWORK_EVIDENCE_CHARS = 420
+MAX_HOMEWORK_CONTEXT_CHARS = 3200
+
+
+def clip_text(value, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def concept_context_block(scored_concepts: list[tuple[float, Concept]]) -> str:
+    blocks = []
+
+    for score, c in scored_concepts:
+        blocks.append(
+            f"""CONCEPT KNOWLEDGE
+Concept id: {c.id}
+Name: {c.name}
+Definition/description: {clip_text(c.definition or c.description, 520) or "Not provided."}
+When to use: {clip_text(c.when_to_use, 320) or "Not provided."}
+Common pitfall: {clip_text(c.pitfalls, 320) or "Not provided."}
+Evidence from uploaded notes: {clip_text(c.evidence, MAX_HOMEWORK_EVIDENCE_CHARS) or "No evidence snippet stored."}
+Concept confidence: {round(float(c.confidence or 0), 3)}
+Retrieval score: {round(float(score), 4)}"""
+        )
+
+    return "\n\n".join(blocks)[:MAX_HOMEWORK_CONTEXT_CHARS]
+
+
+def concept_metadata(scored_concepts: list[tuple[float, Concept]]) -> list[dict]:
+    return [
+        {
+            "id": str(c.id),
+            "name": c.name,
+            "score": round(float(score), 4),
+            "confidence": round(float(c.confidence or 0), 3),
+        }
+        for score, c in scored_concepts
+    ]
+
 
 async def ensure_class_owned(db: AsyncSession, user_id: UUID, class_id: UUID):
     res = await db.execute(
@@ -416,12 +459,22 @@ Explain this naturally to the student.
     scored_concepts = await top_k_concepts(
         body.question,
         concepts,
-        k=4
+        k=HOMEWORK_RAG_TOP_K
     )
     print(f"⏱ top_k_concepts: {time.perf_counter() - t_topk:.2f}s")
 
-    # Separate concepts from scores
-    top_concepts = [c for score, c in scored_concepts]
+    scored_concepts = [(float(score), c) for score, c in scored_concepts]
+    kept_scored_concepts = [
+        (score, c)
+        for score, c in scored_concepts
+        if score >= MIN_HOMEWORK_GROUNDING_SCORE
+    ]
+    top_concepts = [c for score, c in kept_scored_concepts]
+    grounding_confidence = round(
+        max((score for score, _ in kept_scored_concepts), default=0.0),
+        4,
+    )
+    grounding_mode = "strong_note_grounded" if kept_scored_concepts else "weak_or_no_context"
     print("\nTOTAL CONCEPTS IN CLASS:", len(concepts))
 
     missing = sum(1 for c in concepts if c.embedding is None)
@@ -433,23 +486,27 @@ Explain this naturally to the student.
         print(f"Score: {round(score,4)}")
         print(f"Name: {c.name}")
 
-    context = "\n\n".join([
-        f"""
-    CONCEPT KNOWLEDGE
+    print("[homework_rag]", {
+        "class_id": str(class_uuid),
+        "user_id": str(current_user_id),
+        "concepts_loaded": len(concepts),
+        "candidates_retrieved": len(scored_concepts),
+        "kept_after_threshold": len(kept_scored_concepts),
+        "min_score": MIN_HOMEWORK_GROUNDING_SCORE,
+        "top_candidates": [
+            {"name": c.name, "score": round(float(score), 4)}
+            for score, c in scored_concepts
+        ],
+        "grounding_mode": grounding_mode,
+    })
 
-    Name: {c.name}
-
-    Definition:
-    {c.definition or c.description}
-
-    When to use:
-    {c.when_to_use or "Apply when this concept appears in relevant problems."}
-    
-    Common pitfall:
-    {c.pitfalls or "Students often misapply this concept."}
-    """
-        for c in top_concepts
-    ])[:2200]
+    if kept_scored_concepts:
+        context = concept_context_block(kept_scored_concepts)
+    else:
+        context = (
+            "No retrieved class concept passed the grounding threshold "
+            f"({MIN_HOMEWORK_GROUNDING_SCORE})."
+        )
 
     
     # -------- MISCONCEPTION DETECTION (ONLY WHEN NEEDED) --------
@@ -1033,6 +1090,36 @@ Optimize for beginner clarity, transfer, and confidence in setup.
     system_prompt = system_prompt.replace("__STUDENT_STATE__", str(student_state))
     system_prompt = system_prompt.replace("__AVG_MASTERY__", str(avg_mastery))
 
+    if kept_scored_concepts:
+        grounding_rules = """
+COURSE NOTE GROUNDING RULES
+
+Grounding mode: strong_note_grounded
+
+- Use the retrieved course concepts as the primary grounding context when they are relevant.
+- Prefer retrieved evidence from uploaded notes over generic knowledge for note-specific claims.
+- Do not invent note-specific claims that are not supported by the retrieved context.
+- If the retrieved context is incomplete, say that briefly and continue with general course reasoning.
+- Preserve the beginner-first tutoring style.
+"""
+    else:
+        grounding_rules = """
+COURSE NOTE GROUNDING RULES
+
+Grounding mode: weak_or_no_context
+
+- The uploaded notes did not provide a strong matching concept for this request.
+- Still help the student using general course reasoning.
+- Be transparent in one short sentence that this is not strongly grounded in uploaded notes.
+- Do not refuse.
+- Do not over-apologize.
+- Do not ask the student to upload notes instead of helping.
+- After giving useful help, it is okay to mention that uploading or selecting more relevant notes can make future help more course-grounded.
+- Preserve the beginner-first tutoring style.
+"""
+
+    system_prompt = f"{system_prompt}\n\n{grounding_rules}"
+
     # 2) LLM call
     t_tutor = time.perf_counter()
     resp = kimi_client.chat.completions.create(
@@ -1054,7 +1141,7 @@ Recent chat history:
 Detected misconception:
 {mis}
 
-Relevant class concepts:
+Retrieved course context:
 {context}
 """
         }
@@ -1076,7 +1163,9 @@ Relevant class concepts:
 
     return {
         "help": answer,
-        "grounding_confidence": None
+        "grounding_confidence": grounding_confidence,
+        "grounding_mode": grounding_mode,
+        "concepts_used": concept_metadata(kept_scored_concepts),
     }
 
 
@@ -1246,17 +1335,29 @@ async def review_student_work(
     )
 
     concepts = res.scalars().all()
+    content = await file.read()
     mime_type = "application/pdf" if (file.filename or "").lower().endswith(".pdf") else "image/png"
+
     # -------- RETRIEVE RELEVANT CONCEPTS --------
-    query = "student handwritten math solution"
+    review_text = ""
+    filename = file.filename or ""
+    if filename.lower().endswith((".pdf", ".ppt", ".pptx")):
+        try:
+            review_text = clean_extracted_text(await extract_text(filename, content))
+        except Exception as e:
+            print("[review_work_rag] extracted_text_failed", {"error": str(e)})
+
+    query = (
+        clip_text(review_text, 2400)
+        or f"student uploaded work review {filename}".strip()
+        or "student handwritten math solution"
+    )
 
     scored_concepts = await top_k_concepts(
         query,
         concepts,
         k=4
     )
-
-    top_concepts = [c for score, c in scored_concepts]
 
     print("\n===== REVIEW CONCEPT RETRIEVAL =====")
 
@@ -1265,23 +1366,10 @@ async def review_student_work(
         print(f"Score: {round(score,4)}")
         print(f"Name: {c.name}")
 
-    content = await file.read()
-
-    import base64
     img_b64 = base64.b64encode(content).decode()
 
     # -------- BUILD CONCEPT CONTEXT --------
-    context = "\n\n".join([
-        f"""
-CONCEPT KNOWLEDGE
-
-Name: {c.name}
-Definition: {c.definition or c.description}
-When to use: {c.when_to_use or "Apply when this concept appears in relevant problems."}
-Common pitfall: {c.pitfalls or "Students often misapply this concept."}
-"""
-        for c in top_concepts
-    ])[:2200]
+    context = concept_context_block(scored_concepts)[:2200]
 
     resp = kimi_client.chat.completions.create(
         model="kimi-k2.5",
@@ -1436,7 +1524,11 @@ Equations: $$...$$
                 "content": [
                     {
                         "type": "text",
-                        "text": "Here is my work so far on the problem. Please review it."
+                        "text": f"""Here is my work so far on the problem. Please review it.
+
+Extracted text from upload, if available:
+{clip_text(review_text, 3500) or "No extracted text available; use the uploaded file content."}
+"""
                     },
                     {
                         "type": "image_url",
