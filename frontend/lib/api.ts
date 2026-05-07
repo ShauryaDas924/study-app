@@ -329,10 +329,13 @@ export interface ExamPrepSyllabusSummary {
       title: string;
       date_text?: string | null;
       scope_text?: string | null;
+      is_comprehensive?: boolean;
       evidence_quote?: string | null;
     }[];
+    study_topics_count?: number;
     schedule_topics_count?: number;
     explicit_scope_count?: number;
+    ignored_metadata_count?: number;
     warnings?: string[];
   };
   warnings: string[];

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 import time
 from dataclasses import dataclass
@@ -63,6 +62,9 @@ Important:
 - Do not claim certainty about instructor assessments.
 - Evidence quotes must be exact short spans from the syllabus text.
 - If evidence is weak or missing, add a warning.
+- Extract actual academic topics, units, modules, chapters, concepts, course objectives, learning objectives, lecture topics, and subject areas as study_topics.
+- Do not include grading weights, policies, instructor/contact details, office hours, classroom logistics, resource boilerplate, exam labels, or generic course description/admin statements as study_topics.
+- If a final or midterm is comprehensive, mark it in exam_dates/scope metadata. Do not create a study topic called "comprehensive", "final exam", or "midterm".
 
 Schema:
 {
@@ -73,6 +75,15 @@ Schema:
       "title": string,
       "date_text": string|null,
       "scope_text": string|null,
+      "is_comprehensive": boolean,
+      "evidence_quote": string|null
+    }
+  ],
+  "study_topics": [
+    {
+      "topic": string,
+      "section": string|null,
+      "chapter": string|null,
       "evidence_quote": string|null
     }
   ],
@@ -90,6 +101,12 @@ Schema:
       "evidence_quote": string
     }
   ],
+  "ignored_metadata": [
+    {
+      "text": string,
+      "reason": string
+    }
+  ],
   "warnings": string[]
 }
 """
@@ -102,6 +119,128 @@ class TopicCandidate:
     evidence_quote: str | None = None
     date_text: str | None = None
     scope_text: str | None = None
+    section: str | None = None
+
+
+TOPIC_SECTION_PATTERNS = (
+    r"\b(course|tentative|weekly|lecture|class)\s+(outline|schedule)\b",
+    r"\b(topics?|concepts?)\s+(covered|list|schedule|outline)\b",
+    r"\b(course|learning)\s+objectives?\b",
+    r"\bmodules?\b",
+    r"\bunits?\b",
+    r"\bchapters?\b",
+    r"\bexam\s+scope\b",
+    r"\brequired\s+readings?\b",
+    r"\bassigned\s+chapters?\b",
+)
+
+ADMIN_SECTION_PATTERNS = (
+    r"\binstructors?\b",
+    r"\bprofessors?\b",
+    r"\bcontact\b",
+    r"\boffice\s+hours?\b",
+    r"\bclass(room| time| meeting| location)\b",
+    r"\bmeeting\s+(time|location|pattern)\b",
+    r"\bprerequisites?\b",
+)
+
+POLICY_PATTERNS = (
+    r"\bacademic\s+(honesty|dishonesty|integrity)\b",
+    r"\baccessibility\b",
+    r"\bdisability\b",
+    r"\blate\s+(work|policy|submission)\b",
+    r"\bmissed\s+(work|exam|quiz|assignment)\b",
+    r"\bmake-?up\b",
+    r"\b(upload|uploaded|submit|submitted|submission)\b",
+    r"\bsubmission\s+policy\b",
+    r"\bdeadline\b",
+    r"\battendance\s+policy\b",
+    r"\b(course|syllabus)\s+polic(?:y|ies)\b",
+    r"\b(university|college|department)\s+polic(?:y|ies)\b",
+    r"\bpolicies\s+and\s+procedures\b",
+    r"\bplagiarism\b",
+    r"\bcheating\b",
+    r"\btolerated\b",
+)
+
+GRADING_PATTERNS = (
+    r"\bgrading\b",
+    r"\bgrade\s+(breakdown|conversion|scale|scheme|distribution)\b",
+    r"\bpoints?\b",
+    r"\bpercent(age)?\b",
+    r"\bparticipation\b",
+    r"\bhomework\b",
+    r"\bassignments?\b",
+    r"\bquizzes?\b",
+)
+
+CONTACT_PATTERNS = (
+    r"\bemail\b",
+    r"@[a-z0-9.-]+\.[a-z]{2,}",
+    r"\bphone\b",
+    r"\boffice\b",
+    r"\broom\b",
+    r"\bclassroom\b",
+)
+
+RESOURCE_PATTERNS = (
+    r"\btextbooks?\b",
+    r"\bmaterials?\b",
+    r"\bcalculator\b",
+    r"\bsoftware\b",
+    r"\bresources?\b",
+    r"\btechnology\b",
+    r"\bcanvas\b",
+    r"\bblackboard\b",
+    r"\blearning\s+management\s+system\b",
+)
+
+EXAM_LABEL_PATTERNS = (
+    r"^\s*(midterm|final|exam|test|quiz)(\s+(exam|test|quiz))?(\s*#?\d+)?\s*(\([^)]*\))?\s*[:,-]?\s*(\d+%|\d+\s*points?)?\s*$",
+    r"^\s*(midterm|final|exam|test|quiz)(\s+(exam|test|quiz))?(\s*#?\d+)?\b.*\b(mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b",
+)
+
+LEARNING_OBJECTIVE_START = (
+    "analyze",
+    "apply",
+    "compare",
+    "construct",
+    "define",
+    "describe",
+    "design",
+    "determine",
+    "differentiate",
+    "evaluate",
+    "explain",
+    "identify",
+    "interpret",
+    "model",
+    "prove",
+    "recognize",
+    "solve",
+    "understand",
+    "use",
+)
+
+SECTION_ONLY_LABELS = {
+    "course outline",
+    "tentative course outline",
+    "weekly schedule",
+    "lecture schedule",
+    "topics covered",
+    "course objectives",
+    "learning objectives",
+    "modules",
+    "units",
+    "chapters",
+    "required readings",
+    "assigned chapters",
+    "exam scope",
+    "grading",
+    "grading scheme",
+    "course policies",
+    "policies",
+}
 
 
 def clip_text(value, max_chars: int = 420) -> str:
@@ -122,6 +261,137 @@ def tokenize(value: str) -> set[str]:
 
 def normalize_key(value: str) -> str:
     return " ".join(sorted(tokenize(value)))
+
+
+def word_count(value: str) -> int:
+    return len(re.findall(r"[a-z0-9]+", str(value or "").lower()))
+
+
+def has_pattern(value: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, value, flags=re.I) for pattern in patterns)
+
+
+def clean_topic_candidate(text: str | None) -> str | None:
+    value = normalize_space(text or "")
+    if not value:
+        return None
+
+    value = re.sub(r"^[\-\*\u2022\s]+", "", value)
+    value = re.sub(r"^\(?[a-z]\)|^\d+[\.)]\s*", "", value, flags=re.I)
+    value = re.sub(r"^(course|learning)\s+objectives?\s*[:\-]?\s*", "", value, flags=re.I)
+    value = re.sub(r"^(required\s+readings?|assigned\s+chapters?)\s*[:\-]?\s*", "", value, flags=re.I)
+    value = re.sub(r"^(topics?|concepts?|objectives?|readings?)\s*(covered|include|includes|:|-)?\s*", "", value, flags=re.I)
+    value = re.sub(r"^(week|unit|module|lecture)\s*\d+[a-z]?\s*[:\-]?\s*", "", value, flags=re.I)
+    value = re.sub(r"^chapter\s*\d+[a-z]?\s*[:\-]?\s*", "", value, flags=re.I)
+    value = re.sub(r"^final\s+exam\s*(covers|will cover|includes?|scope|content)\s*[:\-]?\s*", "", value, flags=re.I)
+    value = re.sub(r"^final\s+exam\s*[:\-]\s*", "", value, flags=re.I)
+    value = re.sub(r"^comprehensive\s*[:\-]\s*", "", value, flags=re.I)
+    value = re.sub(r"^(exam|midterm|test|quiz)\s*(\d+|#\d+)?\s*(covers|will cover|includes?|scope|content)\s*[:\-]?\s*", "", value, flags=re.I)
+    value = re.sub(r"^(exam|midterm|test|quiz)\s*(\d+|#\d+)\s*[:\-]\s*", "", value, flags=re.I)
+    value = re.sub(r"^(students?|learners?)\s+(will|should|can)\s+(be able to\s+)?", "", value, flags=re.I)
+    value = value.strip(" -:;,.()[]")
+    value = normalize_space(value)
+    return value or None
+
+
+def classify_syllabus_candidate(text: str | None, source: str = "", section: str | None = None) -> tuple[str, str]:
+    raw = normalize_space(text or "")
+    candidate = clean_topic_candidate(raw) or ""
+    low_raw = raw.lower()
+    low = candidate.lower()
+    section_low = normalize_space(section or source).lower()
+    words = word_count(candidate)
+
+    if not candidate or words == 0:
+        return "unknown", "empty candidate"
+
+    if low in SECTION_ONLY_LABELS or low.rstrip(":") in SECTION_ONLY_LABELS:
+        return "unknown", "section heading without a topic"
+
+    has_percentage = bool(re.search(r"\b\d{1,3}\s*%", low_raw))
+    if has_percentage and (
+        has_pattern(low_raw, GRADING_PATTERNS)
+        or re.search(r"\b(exam|midterm|final|test|quiz|participation)\b", low_raw)
+    ):
+        return "grading_metadata", "grading or exam weight line"
+
+    if has_pattern(section_low, ADMIN_SECTION_PATTERNS) or has_pattern(low_raw, ADMIN_SECTION_PATTERNS) or has_pattern(low_raw, CONTACT_PATTERNS):
+        return "course_admin", "contact or course logistics line"
+
+    if has_pattern(section_low, POLICY_PATTERNS) or has_pattern(low_raw, POLICY_PATTERNS):
+        return "course_policy", "policy or submission boilerplate"
+
+    if has_pattern(section_low, RESOURCE_PATTERNS) or (
+        has_pattern(low_raw, RESOURCE_PATTERNS)
+        and not re.search(r"\b(required\s+readings?|assigned\s+chapters?)\b", section_low)
+    ):
+        return "resources_materials", "materials or resource line"
+
+    if has_pattern(section_low, GRADING_PATTERNS) or (
+        has_pattern(low_raw, GRADING_PATTERNS)
+        and has_percentage
+    ):
+        return "grading_metadata", "grading line"
+
+    if any(re.search(pattern, low_raw, flags=re.I) for pattern in EXAM_LABEL_PATTERNS):
+        return "exam_metadata", "exam label rather than an academic topic"
+
+    if re.search(r"\b(final|midterm|exam|test|quiz)\b", low_raw) and re.search(r"\bcomprehensive\b", low_raw):
+        return "exam_metadata", "comprehensive exam metadata rather than a topic"
+
+    if (
+        re.search(r"\b(this|the)\s+(class|course)\s+(covers|prepares|aligns)\b", low_raw)
+        and re.search(r"\b(exam|certification|licensure|board|standardized)\b", low_raw)
+    ):
+        return "exam_metadata", "generic external exam coverage statement"
+
+    if re.search(r"\b(class|meeting)\s+time\b", low_raw) or re.search(r"\b(mon|tue|wed|thu|fri)\b.*\b(am|pm)\b", low_raw):
+        return "course_admin", "date or meeting-time logistics"
+
+    if re.search(r"\b(final|midterm|exam|test|quiz)\b", low) and words <= 5:
+        return "exam_metadata", "exam label rather than an academic topic"
+
+    preferred_section = has_pattern(section_low, TOPIC_SECTION_PATTERNS)
+    preferred_source = source in {"study_topic", "schedule_topic", "explicit_scope", "exam_scope", "fallback_topic"}
+    starts_with_objective = low.split(" ", 1)[0] in LEARNING_OBJECTIVE_START
+    has_topic_marker = re.search(r"\b(chapter|unit|module|lecture|topic)\s+\d+\b", low_raw)
+    has_sentence_punctuation = bool(re.search(r"[.!?]", candidate))
+
+    if words > 22 and not starts_with_objective:
+        return "unknown", "too long and sentence-like for a study topic"
+
+    if has_sentence_punctuation and words > 14 and not starts_with_objective:
+        return "unknown", "sentence-like statement without a clear objective"
+
+    if preferred_section or preferred_source or starts_with_objective or has_topic_marker:
+        return "study_topic", "topic section or learning objective"
+
+    if 1 <= words <= 12 and not re.search(r"\b(please|must|should|deadline|required|office|email)\b", low):
+        return "study_topic", "concise academic-topic candidate"
+
+    return "unknown", "ambiguous syllabus line"
+
+
+def is_probable_study_topic(text: str | None, source: str = "", section: str | None = None) -> bool:
+    category, _reason = classify_syllabus_candidate(text, source=source, section=section)
+    return category == "study_topic"
+
+
+def split_topic_fragments(text: str | None) -> list[str]:
+    value = normalize_space(text or "")
+    value = re.sub(r"^final\s+exam\s*(covers|will cover|includes?|scope|content)\s*[:\-]?\s*", "", value, flags=re.I)
+    value = re.sub(r"^final\s+exam\s*[:\-]\s*", "", value, flags=re.I)
+    value = re.sub(r"^comprehensive\s*[:\-]\s*", "", value, flags=re.I)
+    value = re.sub(r"^(exam|midterm|test|quiz)\s*(\d+|#\d+)?\s*(covers|will cover|includes?|scope|content)\s*[:\-]?\s*", "", value, flags=re.I)
+    value = re.sub(r"^(exam|midterm|test|quiz)\s*(\d+|#\d+)\s*[:\-]\s*", "", value, flags=re.I)
+    value = re.sub(r"^(topics?|concepts?)\s+(include|covered)\s*[:\-]\s*", "", value, flags=re.I)
+    parts = re.split(r"\s*(?:;|\||/|\n)\s*", value)
+    cleaned = []
+    for part in parts:
+        topic = clean_topic_candidate(part)
+        if topic:
+            cleaned.append(topic)
+    return cleaned or ([clean_topic_candidate(value)] if clean_topic_candidate(value) else [])
 
 
 def clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -151,8 +421,10 @@ def parsed_summary(parsed_json: dict, warnings: list[str] | None = None) -> dict
         "course_title": parsed_json.get("course_title"),
         "instructor": parsed_json.get("instructor"),
         "exam_dates": (parsed_json.get("exam_dates") or [])[:5],
+        "study_topics_count": len(parsed_json.get("study_topics") or []),
         "schedule_topics_count": len(parsed_json.get("schedule_topics") or []),
         "explicit_scope_count": len(parsed_json.get("explicit_scope_statements") or []),
+        "ignored_metadata_count": len(parsed_json.get("ignored_metadata") or []),
         "warnings": parsed_warnings,
     }
 
@@ -202,48 +474,69 @@ def fallback_parse_syllabus(raw_text: str, warning: str | None = None) -> dict:
     lines = [line for line in lines if 5 <= len(line) <= 220]
 
     exam_dates = []
+    study_topics = []
     schedule_topics = []
     scope_statements = []
+    ignored_metadata = []
+    current_section: str | None = None
 
     for line in lines[:350]:
         low = line.lower()
-        has_exam_word = any(word in low for word in ["exam", "midterm", "final", "test", "quiz"])
-        has_topic_word = any(word in low for word in ["week", "chapter", "unit", "module", "topic", "lecture"])
+        if has_pattern(low, TOPIC_SECTION_PATTERNS):
+            current_section = line
+            if (clean_topic_candidate(line) or "").lower() in SECTION_ONLY_LABELS:
+                continue
 
-        if has_exam_word and len(exam_dates) < 8:
+        category, reason = classify_syllabus_candidate(line, source="fallback", section=current_section)
+        has_exam_word = any(word in low for word in ["exam", "midterm", "final", "test", "quiz"])
+        has_calendar_hint = bool(
+            re.search(r"\b(mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b", low)
+            or re.search(r"\b\d{1,2}/\d{1,2}\b", low)
+        )
+
+        if has_exam_word and has_calendar_hint and category != "study_topic" and len(exam_dates) < 8:
             exam_dates.append(
                 {
                     "title": clip_text(line, 80),
                     "date_text": None,
                     "scope_text": None,
+                    "is_comprehensive": "comprehensive" in low,
                     "evidence_quote": clip_text(line, 180),
                 }
             )
-            scope_statements.append({"text": clip_text(line, 180), "evidence_quote": clip_text(line, 180)})
             continue
 
-        if has_topic_word and len(schedule_topics) < 40:
-            schedule_topics.append(
-                {
-                    "date_text": None,
-                    "topic": clip_text(line, 120),
-                    "chapter": None,
-                    "evidence_quote": clip_text(line, 180),
-                }
-            )
+        if category == "study_topic":
+            topic = clean_topic_candidate(line)
+            if topic and len(study_topics) < 50:
+                target = schedule_topics if re.search(r"\b(week|chapter|unit|module|topic|lecture)\b", low) else study_topics
+                target.append(
+                    {
+                        "date_text": None,
+                        "topic": clip_text(topic, 120),
+                        "section": current_section,
+                        "chapter": None,
+                        "evidence_quote": clip_text(line, 180),
+                    }
+                )
+        elif category != "unknown" and len(ignored_metadata) < 40:
+            ignored_metadata.append({"text": clip_text(line, 180), "reason": reason})
 
-    if not schedule_topics:
+    if not study_topics and not schedule_topics:
         for line in lines[:18]:
             if len(schedule_topics) >= 12:
                 break
-            schedule_topics.append(
-                {
-                    "date_text": None,
-                    "topic": clip_text(line, 120),
-                    "chapter": None,
-                    "evidence_quote": clip_text(line, 180),
-                }
-            )
+            if is_probable_study_topic(line, source="fallback"):
+                topic = clean_topic_candidate(line)
+                if topic:
+                    schedule_topics.append(
+                        {
+                            "date_text": None,
+                            "topic": clip_text(topic, 120),
+                            "chapter": None,
+                            "evidence_quote": clip_text(line, 180),
+                        }
+                    )
 
     warnings = ["Syllabus parsing used a fallback parser; evidence may be less structured."]
     if warning:
@@ -253,8 +546,10 @@ def fallback_parse_syllabus(raw_text: str, warning: str | None = None) -> dict:
         "course_title": None,
         "instructor": None,
         "exam_dates": exam_dates,
+        "study_topics": study_topics,
         "schedule_topics": schedule_topics,
         "explicit_scope_statements": scope_statements[:12],
+        "ignored_metadata": ignored_metadata,
         "warnings": warnings,
     }
 
@@ -276,6 +571,12 @@ def validate_evidence_quotes(parsed_json: dict, raw_text: str) -> dict:
             item["inferred_summary"] = quote
             item["evidence_quote"] = None
 
+    for item in parsed.get("study_topics") or []:
+        quote = item.get("evidence_quote")
+        if quote and not quote_in_text(quote, raw_text):
+            item["inferred_summary"] = quote
+            item["evidence_quote"] = None
+
     for item in parsed.get("schedule_topics") or []:
         quote = item.get("evidence_quote")
         if quote and not quote_in_text(quote, raw_text):
@@ -288,34 +589,57 @@ def validate_evidence_quotes(parsed_json: dict, raw_text: str) -> dict:
             item["inferred_summary"] = quote
             item["evidence_quote"] = ""
 
+    for item in parsed.get("ignored_metadata") or []:
+        quote = item.get("text")
+        if quote and not quote_in_text(quote, raw_text):
+            item["inferred_summary"] = quote
+            item["text"] = ""
+
     return parsed
 
 
 def ensure_parse_shape(parsed_json: dict) -> dict:
     parsed = parsed_json if isinstance(parsed_json, dict) else {}
     raw_exam_dates = parsed.get("exam_dates") if isinstance(parsed.get("exam_dates"), list) else []
+    raw_study_topics = parsed.get("study_topics") if isinstance(parsed.get("study_topics"), list) else []
     raw_schedule_topics = parsed.get("schedule_topics") if isinstance(parsed.get("schedule_topics"), list) else []
     raw_scope_statements = (
         parsed.get("explicit_scope_statements")
         if isinstance(parsed.get("explicit_scope_statements"), list)
         else []
     )
+    raw_ignored_metadata = (
+        parsed.get("ignored_metadata")
+        if isinstance(parsed.get("ignored_metadata"), list)
+        else []
+    )
     raw_warnings = parsed.get("warnings") if isinstance(parsed.get("warnings"), list) else []
 
-    exam_dates = [item for item in raw_exam_dates if isinstance(item, dict)]
+    exam_dates = []
+    for item in raw_exam_dates:
+        if not isinstance(item, dict):
+            continue
+        normalized = dict(item)
+        normalized["is_comprehensive"] = bool(normalized.get("is_comprehensive"))
+        exam_dates.append(normalized)
+
+    study_topics = [item for item in raw_study_topics if isinstance(item, dict)]
     schedule_topics = [item for item in raw_schedule_topics if isinstance(item, dict)]
     scope_statements = [
         item for item in raw_scope_statements
         if isinstance(item, dict)
     ]
+    ignored_metadata = [item for item in raw_ignored_metadata if isinstance(item, dict)]
     warnings = [str(item) for item in raw_warnings if item]
 
     return {
         "course_title": parsed.get("course_title") if isinstance(parsed.get("course_title"), str) else None,
         "instructor": parsed.get("instructor") if isinstance(parsed.get("instructor"), str) else None,
         "exam_dates": exam_dates,
+        "study_topics": study_topics,
         "schedule_topics": schedule_topics,
         "explicit_scope_statements": scope_statements,
+        "ignored_metadata": ignored_metadata,
         "warnings": warnings,
     }
 
@@ -350,84 +674,132 @@ async def parse_syllabus(raw_text: str) -> tuple[dict, str, str | None]:
         "[exam_prep] syllabus_parse",
         {
             "status": status,
-            "topics": len(parsed.get("schedule_topics") or []),
+            "topics": len(parsed.get("study_topics") or []) + len(parsed.get("schedule_topics") or []),
             "exam_dates": len(parsed.get("exam_dates") or []),
+            "ignored_metadata": len(parsed.get("ignored_metadata") or []),
             "elapsed_sec": round(elapsed, 2),
         },
     )
     return parsed, status, error
 
 
-def topic_from_scope_text(text: str) -> str:
-    text = normalize_space(text)
-    text = re.sub(r"^(exam|midterm|final|test|quiz)\s*\d*\s*[:,-]?\s*", "", text, flags=re.I)
-    return clip_text(text, 120) or "Exam scope"
+def exam_item_is_comprehensive(item: dict) -> bool:
+    text = " ".join(
+        normalize_space(item.get(key) or "")
+        for key in ["title", "scope_text", "date_text", "evidence_quote"]
+    ).lower()
+    return bool(item.get("is_comprehensive")) or bool(re.search(r"\bcomprehensive\b", text))
 
 
-def collect_topic_candidates(parsed_json: dict, raw_text: str) -> list[TopicCandidate]:
+def add_topic_candidate(
+    candidates: list[TopicCandidate],
+    topic: str | None,
+    source: str,
+    evidence_quote: str | None = None,
+    date_text: str | None = None,
+    scope_text: str | None = None,
+    section: str | None = None,
+) -> None:
+    for fragment in split_topic_fragments(topic):
+        if not fragment:
+            continue
+        category, _reason = classify_syllabus_candidate(fragment, source=source, section=section)
+        if category != "study_topic":
+            continue
+        cleaned = clean_topic_candidate(fragment)
+        if not cleaned:
+            continue
+        candidates.append(
+            TopicCandidate(
+                topic_name=clip_text(cleaned, 120),
+                source=source,
+                evidence_quote=evidence_quote or topic,
+                date_text=date_text,
+                scope_text=scope_text,
+                section=section,
+            )
+        )
+
+
+def collect_topic_candidates(parsed_json: dict, raw_text: str) -> tuple[list[TopicCandidate], list[str]]:
     candidates: list[TopicCandidate] = []
+    warnings: list[str] = []
+    exam_dates = parsed_json.get("exam_dates") or []
+    is_comprehensive = any(exam_item_is_comprehensive(item) for item in exam_dates if isinstance(item, dict))
+
+    if is_comprehensive:
+        warnings.append("The exam appears comprehensive, so the plan uses all major syllabus topics found.")
+
+    for item in parsed_json.get("study_topics") or []:
+        topic = item.get("topic")
+        if topic:
+            add_topic_candidate(
+                candidates,
+                topic,
+                source="study_topic",
+                evidence_quote=item.get("evidence_quote") or topic,
+                section=item.get("section"),
+            )
 
     for item in parsed_json.get("explicit_scope_statements") or []:
         text = item.get("text") or item.get("evidence_quote")
         if text:
-            candidates.append(
-                TopicCandidate(
-                    topic_name=topic_from_scope_text(text),
-                    source="explicit_scope",
-                    evidence_quote=item.get("evidence_quote") or text,
-                    scope_text=text,
-                )
+            add_topic_candidate(
+                candidates,
+                text,
+                source="explicit_scope",
+                evidence_quote=item.get("evidence_quote") or text,
+                scope_text=text,
             )
 
-    for item in parsed_json.get("exam_dates") or []:
+    for item in exam_dates:
         scope = item.get("scope_text")
-        title = item.get("title")
         if scope:
-            candidates.append(
-                TopicCandidate(
-                    topic_name=topic_from_scope_text(scope),
-                    source="exam_scope",
-                    evidence_quote=item.get("evidence_quote") or scope,
-                    date_text=item.get("date_text"),
-                    scope_text=scope,
-                )
-            )
-        elif title and item.get("evidence_quote"):
-            candidates.append(
-                TopicCandidate(
-                    topic_name=topic_from_scope_text(title),
-                    source="exam_date",
-                    evidence_quote=item.get("evidence_quote"),
-                    date_text=item.get("date_text"),
-                )
+            add_topic_candidate(
+                candidates,
+                scope,
+                source="exam_scope",
+                evidence_quote=item.get("evidence_quote") or scope,
+                date_text=item.get("date_text"),
+                scope_text=scope,
             )
 
     for item in parsed_json.get("schedule_topics") or []:
         topic = item.get("topic")
         if topic:
-            candidates.append(
-                TopicCandidate(
-                    topic_name=clip_text(topic, 120),
-                    source="schedule_topic",
-                    evidence_quote=item.get("evidence_quote") or topic,
-                    date_text=item.get("date_text"),
-                )
+            add_topic_candidate(
+                candidates,
+                topic,
+                source="schedule_topic",
+                evidence_quote=item.get("evidence_quote") or topic,
+                date_text=item.get("date_text"),
+                section=item.get("section"),
             )
 
     if not candidates:
         fallback = fallback_parse_syllabus(raw_text)
+        for warning in fallback.get("warnings") or []:
+            if warning not in warnings:
+                warnings.append(warning)
         for item in fallback.get("schedule_topics") or []:
-            candidates.append(
-                TopicCandidate(
-                    topic_name=item["topic"],
-                    source="fallback_topic",
-                    evidence_quote=item.get("evidence_quote"),
-                )
+            add_topic_candidate(
+                candidates,
+                item.get("topic"),
+                source="fallback_topic",
+                evidence_quote=item.get("evidence_quote"),
+            )
+        for item in fallback.get("study_topics") or []:
+            add_topic_candidate(
+                candidates,
+                item.get("topic"),
+                source="fallback_topic",
+                evidence_quote=item.get("evidence_quote"),
+                section=item.get("section"),
             )
 
     deduped: list[TopicCandidate] = []
     seen: set[str] = set()
-    source_rank = {"explicit_scope": 0, "exam_scope": 1, "schedule_topic": 2, "exam_date": 3, "fallback_topic": 4}
+    source_rank = {"explicit_scope": 0, "exam_scope": 1, "study_topic": 2, "schedule_topic": 3, "fallback_topic": 4}
     candidates.sort(key=lambda c: source_rank.get(c.source, 9))
 
     for candidate in candidates:
@@ -439,7 +811,7 @@ def collect_topic_candidates(parsed_json: dict, raw_text: str) -> list[TopicCand
         if len(deduped) >= 35:
             break
 
-    return deduped
+    return deduped, warnings
 
 
 def concept_blob(concept) -> str:
@@ -608,7 +980,7 @@ def score_topic(candidate: TopicCandidate, matched: list[dict], mastery_map: dic
     if matched_concepts:
         action = f"Review {matched_concepts[0].name.replace('_', ' ')} and practice one applied question."
     else:
-        action = "Review the syllabus topic, then add or upload notes for stronger course grounding."
+        action = "Review this syllabus topic and upload notes for stronger course grounding."
 
     scoring_json = {
         "syllabus_signal": syllabus_signal,
@@ -636,10 +1008,11 @@ def score_topic(candidate: TopicCandidate, matched: list[dict], mastery_map: dic
 def build_topic_predictions(parsed_json: dict, raw_text: str, concepts: list, mastery_map: dict[UUID, float]) -> tuple[list[dict], list[str]]:
     start = time.perf_counter()
     warnings = []
-    candidates = collect_topic_candidates(parsed_json, raw_text)
+    candidates, candidate_warnings = collect_topic_candidates(parsed_json, raw_text)
+    warnings.extend(candidate_warnings)
 
     if not concepts:
-        warnings.append("No uploaded course concepts were found, so the plan is based mostly on syllabus evidence.")
+        warnings.append("No uploaded course concepts were found for this course, so the plan is based mostly on syllabus evidence.")
 
     predictions = []
     matched_concept_count = 0
@@ -660,6 +1033,7 @@ def build_topic_predictions(parsed_json: dict, raw_text: str, concepts: list, ma
             "concepts_loaded": len(concepts),
             "topics": len(predictions),
             "matched_concepts": matched_concept_count,
+            "ignored_metadata": len(parsed_json.get("ignored_metadata") or []),
             "elapsed_sec": round(elapsed, 2),
         },
     )

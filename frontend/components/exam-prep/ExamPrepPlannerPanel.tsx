@@ -138,23 +138,28 @@ export default function ExamPrepPlannerPanel() {
             <div className="rounded-xl border border-slate-100 p-3">
               <div className="text-sm font-medium text-slate-900">Uploaded syllabi</div>
               <div className="mt-2 space-y-2">
-                {syllabiQ.data.slice(0, 4).map((syllabus) => (
-                  <button
-                    key={syllabus.id}
-                    onClick={() => setSelectedSyllabusId(syllabus.id)}
-                    className="block w-full rounded-lg border px-3 py-2 text-left text-sm transition"
-                    style={{
-                      borderColor: selectedSyllabusId === syllabus.id ? "rgba(247,167,195,0.55)" : "var(--border-soft)",
-                      background: selectedSyllabusId === syllabus.id ? "var(--gradient-main)" : "rgba(255,255,255,0.72)",
-                      color: "var(--text-main)",
-                    }}
-                  >
-                    <div className="font-medium">{syllabus.filename}</div>
-                    <div className="text-xs opacity-70">
-                      {syllabus.parsed_summary.schedule_topics_count ?? 0} schedule topics found
-                    </div>
-                  </button>
-                ))}
+                {syllabiQ.data.slice(0, 4).map((syllabus) => {
+                  const topicCount =
+                    Number(syllabus.parsed_summary.study_topics_count ?? 0) +
+                    Number(syllabus.parsed_summary.schedule_topics_count ?? 0);
+                  return (
+                    <button
+                      key={syllabus.id}
+                      onClick={() => setSelectedSyllabusId(syllabus.id)}
+                      className="block w-full rounded-lg border px-3 py-2 text-left text-sm transition"
+                      style={{
+                        borderColor: selectedSyllabusId === syllabus.id ? "rgba(247,167,195,0.55)" : "var(--border-soft)",
+                        background: selectedSyllabusId === syllabus.id ? "var(--gradient-main)" : "rgba(255,255,255,0.72)",
+                        color: "var(--text-main)",
+                      }}
+                    >
+                      <div className="font-medium">{syllabus.filename}</div>
+                      <div className="text-xs opacity-70">
+                        {topicCount} study topic{topicCount === 1 ? "" : "s"} found
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           ) : null}
