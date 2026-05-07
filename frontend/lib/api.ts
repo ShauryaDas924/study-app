@@ -21,6 +21,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function requestForm<T>(path: string, form: FormData): Promise<T> {
+  const res = await authFetch(path, {
+    method: "POST",
+    body: form,
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Request failed: ${res.status}`);
+  }
+
+  return res.json() as Promise<T>;
+}
+
 /* =========================
    Shared Types
 ========================= */
@@ -297,6 +312,126 @@ export interface WeeklyPlanOut {
   weekly_plan: WeeklyPlanWeek[];
 }
 
+export type ExamPrepConfidence = "high" | "medium" | "low";
+export type ExamPrepIntensity = "light" | "balanced" | "aggressive";
+export type ExamPrepTaskStatus = "pending" | "done" | "skipped";
+export type ExamPrepTaskType = "review" | "practice" | "flashcards" | "mixed" | "mock_exam";
+
+export interface ExamPrepSyllabusSummary {
+  id: UUID;
+  filename: string;
+  created_at?: string | null;
+  parse_status?: string;
+  parsed_summary: {
+    course_title?: string | null;
+    instructor?: string | null;
+    exam_dates?: {
+      title: string;
+      date_text?: string | null;
+      scope_text?: string | null;
+      evidence_quote?: string | null;
+    }[];
+    schedule_topics_count?: number;
+    explicit_scope_count?: number;
+    warnings?: string[];
+  };
+  warnings: string[];
+}
+
+export interface UploadExamPrepSyllabusOut {
+  syllabus_id: UUID;
+  filename: string;
+  parsed_summary: ExamPrepSyllabusSummary["parsed_summary"];
+  warnings: string[];
+}
+
+export interface ExamPrepEvidenceItem {
+  source: "syllabus" | "concept" | "mastery" | "inference";
+  label: string;
+  quote: string | null;
+  concept_id: UUID | null;
+}
+
+export interface ExamPrepTopicPrediction {
+  id?: UUID;
+  topic_name: string;
+  matched_concept_ids: UUID[];
+  exam_likelihood_score: number;
+  student_priority_score: number;
+  confidence: ExamPrepConfidence;
+  evidence: ExamPrepEvidenceItem[];
+  missing_data: string[];
+  recommended_study_action: string;
+  scoring_json?: Record<string, unknown>;
+}
+
+export interface ExamPrepPlanTask {
+  id?: UUID;
+  exam_prep_plan_id?: UUID;
+  exam_topic_prediction_id?: UUID | null;
+  topic_prediction_id?: UUID | null;
+  concept_id?: UUID | null;
+  planned_for?: string | null;
+  task_type: ExamPrepTaskType;
+  title: string;
+  description?: string | null;
+  minutes: number;
+  rationale?: string | null;
+  topic_name?: string;
+  status?: ExamPrepTaskStatus;
+  source_json?: Record<string, unknown>;
+}
+
+export interface ExamPrepPlanDay {
+  date: string;
+  title: string;
+  tasks: ExamPrepPlanTask[];
+}
+
+export interface GenerateExamPrepPlanRequest {
+  class_id: UUID;
+  syllabus_id: UUID;
+  exam_title: string;
+  exam_date_iso: string;
+  available_minutes_per_day: number;
+  intensity: ExamPrepIntensity;
+}
+
+export interface GenerateExamPrepPlanResponse {
+  exam_prep_plan_id: UUID;
+  topics: ExamPrepTopicPrediction[];
+  plan_days: ExamPrepPlanDay[];
+  warnings: string[];
+}
+
+export interface ExamPrepPlanSummary {
+  id: UUID;
+  class_id: UUID;
+  syllabus_id: UUID;
+  title: string;
+  exam_title: string;
+  exam_date: string;
+  available_minutes_per_day: number;
+  intensity: ExamPrepIntensity;
+  status: string;
+  topic_count: number;
+  warning_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ExamPrepPlan extends ExamPrepPlanSummary {
+  topics: ExamPrepTopicPrediction[];
+  plan_days: ExamPrepPlanDay[];
+  warnings: string[];
+  tasks: ExamPrepPlanTask[];
+}
+
+export interface CreateExamPrepTasksOut {
+  created_count: number;
+  tasks: ExamPrepPlanTask[];
+}
+
 export interface AutoBuildDepsOut {
   edges_created: number;
   edges: { concept: string; depends_on: string }[];
@@ -422,6 +557,40 @@ export const api = {
 
   planWeekly: (body: PlanGenerateIn) =>
     request<WeeklyPlanOut>(`/plan/weekly-generate`, { method: "POST", body: JSON.stringify(body) }),
+
+  uploadExamPrepSyllabus: (classId: UUID, file: File) => {
+    const form = new FormData();
+    form.append("class_id", classId);
+    form.append("file", file);
+    return requestForm<UploadExamPrepSyllabusOut>("/plan/exam-prep/syllabi", form);
+  },
+
+  listExamPrepSyllabi: (classId: UUID) =>
+    request<ExamPrepSyllabusSummary[]>(`/plan/exam-prep/syllabi?class_id=${classId}`),
+
+  generateExamPrepPlan: (body: GenerateExamPrepPlanRequest) =>
+    request<GenerateExamPrepPlanResponse>("/plan/exam-prep/generate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  listExamPrepPlans: (classId: UUID) =>
+    request<ExamPrepPlanSummary[]>(`/plan/exam-prep/plans?class_id=${classId}`),
+
+  getExamPrepPlan: (planId: UUID) =>
+    request<ExamPrepPlan>(`/plan/exam-prep/plans/${planId}`),
+
+  createExamPrepTasks: (planId: UUID, overwriteExisting = false) =>
+    request<CreateExamPrepTasksOut>(`/plan/exam-prep/plans/${planId}/tasks`, {
+      method: "POST",
+      body: JSON.stringify({ overwrite_existing: overwriteExisting }),
+    }),
+
+  updateExamPrepTaskStatus: (taskId: UUID, status: ExamPrepTaskStatus) =>
+    request<ExamPrepPlanTask>(`/plan/exam-prep/tasks/${taskId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
 
   // dependencies
   autoBuildDependencies: (classId: UUID) =>

@@ -1296,7 +1296,7 @@ Return JSON ONLY:
 }
 
 exam_score:
-0.9–1.0 = almost guaranteed exam topic
+0.9–1.0 = strongest available exam signal
 0.7–0.89 = very likely
 0.5–0.69 = possibly tested
 <0.5 = low priority

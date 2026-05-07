@@ -283,6 +283,94 @@ class ExamInsight(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+
+# ----------------------
+# EXAM PREP PLANNER
+# ----------------------
+class ExamPrepSyllabus(Base):
+    __tablename__ = "exam_prep_syllabi"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    class_id = Column(UUID(as_uuid=True), ForeignKey("classes.id"), nullable=False, index=True)
+
+    filename = Column(Text, nullable=False)
+    mime_type = Column(Text, nullable=True)
+    raw_text = Column(Text, nullable=False)
+    parsed_json = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    parse_status = Column(Text, nullable=False, server_default=text("'pending'"))
+    parse_error = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExamPrepPlan(Base):
+    __tablename__ = "exam_prep_plans"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    class_id = Column(UUID(as_uuid=True), ForeignKey("classes.id"), nullable=False, index=True)
+    syllabus_id = Column(UUID(as_uuid=True), ForeignKey("exam_prep_syllabi.id"), nullable=False, index=True)
+
+    title = Column(Text, nullable=False)
+    exam_title = Column(Text, nullable=False)
+    exam_date = Column(DateTime(timezone=True), nullable=False, index=True)
+    available_minutes_per_day = Column(Integer, nullable=False, server_default=text("60"))
+    intensity = Column(Text, nullable=False, server_default=text("'balanced'"))
+    starts_on = Column(DateTime(timezone=True), nullable=False)
+    ends_on = Column(DateTime(timezone=True), nullable=False)
+    plan_json = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    status = Column(Text, nullable=False, server_default=text("'active'"))
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExamPrepTopicPrediction(Base):
+    __tablename__ = "exam_prep_topic_predictions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    class_id = Column(UUID(as_uuid=True), ForeignKey("classes.id"), nullable=False, index=True)
+    syllabus_id = Column(UUID(as_uuid=True), ForeignKey("exam_prep_syllabi.id"), nullable=False, index=True)
+    exam_prep_plan_id = Column(UUID(as_uuid=True), ForeignKey("exam_prep_plans.id"), nullable=True, index=True)
+
+    topic_name = Column(Text, nullable=False)
+    matched_concept_ids = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    exam_likelihood_score = Column(Float, nullable=False, server_default=text("0"))
+    student_priority_score = Column(Float, nullable=False, server_default=text("0"))
+    confidence = Column(Text, nullable=False, server_default=text("'low'"))
+    evidence = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    missing_data = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    recommended_study_action = Column(Text, nullable=False)
+    scoring_json = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExamPrepTask(Base):
+    __tablename__ = "exam_prep_tasks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    class_id = Column(UUID(as_uuid=True), ForeignKey("classes.id"), nullable=False, index=True)
+    exam_prep_plan_id = Column(UUID(as_uuid=True), ForeignKey("exam_prep_plans.id"), nullable=False, index=True)
+    exam_topic_prediction_id = Column(UUID(as_uuid=True), ForeignKey("exam_prep_topic_predictions.id"), nullable=True, index=True)
+    concept_id = Column(UUID(as_uuid=True), ForeignKey("concepts.id"), nullable=True, index=True)
+
+    planned_for = Column(DateTime(timezone=True), nullable=False, index=True)
+    task_type = Column(Text, nullable=False)
+    title = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    minutes = Column(Integer, nullable=False, server_default=text("0"))
+    rationale = Column(Text, nullable=True)
+    status = Column(Text, nullable=False, server_default=text("'pending'"), index=True)
+    source_json = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
 # ----------------------
 # EXAM SESSIONS
 # ----------------------

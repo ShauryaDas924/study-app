@@ -4,6 +4,7 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import StudyPlanGenerator from "@/components/StudyPlanGenerator";
 import WeeklyPlanGenerator from "@/components/WeeklyPlanGenerator";
 import RequireAuth from "@/components/RequireAuth";
+import ExamPrepPlannerPanel from "@/components/exam-prep/ExamPrepPlannerPanel";
 
 function PlannerContent() {
   return (
@@ -14,6 +15,14 @@ function PlannerContent() {
           A realistic plan that adapts as your mastery changes.
         </p>
       </div>
+
+      <Card>
+        <CardHeader
+          title="Exam Prep Planner"
+          subtitle="Upload a syllabus and generate an evidence-based study plan from likely exam scope."
+        />
+        <ExamPrepPlannerPanel />
+      </Card>
 
       <Card>
         <CardHeader title="Daily Plan" subtitle="Simple daily loop: review → practice → reflection." />

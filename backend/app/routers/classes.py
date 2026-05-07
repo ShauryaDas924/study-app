@@ -32,6 +32,10 @@ from app.models import (
     Exam,
     ExamInsight,
     ExamSession,
+    ExamPrepPlan,
+    ExamPrepSyllabus,
+    ExamPrepTask,
+    ExamPrepTopicPrediction,
     MasteryHistory,
 )
 router = APIRouter(prefix="/classes", tags=["classes"])
@@ -191,6 +195,34 @@ async def clear_class_data(
         delete(WorkReviewSession).where(
             WorkReviewSession.user_id == user_id,
             WorkReviewSession.class_id == class_id
+        )
+    )
+
+    # -----------------------------
+    # 7.9 Delete Exam Prep Planner data
+    # -----------------------------
+    await db.execute(
+        delete(ExamPrepTask).where(
+            ExamPrepTask.user_id == user_id,
+            ExamPrepTask.class_id == class_id
+        )
+    )
+    await db.execute(
+        delete(ExamPrepTopicPrediction).where(
+            ExamPrepTopicPrediction.user_id == user_id,
+            ExamPrepTopicPrediction.class_id == class_id
+        )
+    )
+    await db.execute(
+        delete(ExamPrepPlan).where(
+            ExamPrepPlan.user_id == user_id,
+            ExamPrepPlan.class_id == class_id
+        )
+    )
+    await db.execute(
+        delete(ExamPrepSyllabus).where(
+            ExamPrepSyllabus.user_id == user_id,
+            ExamPrepSyllabus.class_id == class_id
         )
     )
     
@@ -362,6 +394,30 @@ async def delete_class(
         delete(WorkReviewSession).where(
             WorkReviewSession.user_id == user_id,
             WorkReviewSession.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(ExamPrepTask).where(
+            ExamPrepTask.user_id == user_id,
+            ExamPrepTask.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(ExamPrepTopicPrediction).where(
+            ExamPrepTopicPrediction.user_id == user_id,
+            ExamPrepTopicPrediction.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(ExamPrepPlan).where(
+            ExamPrepPlan.user_id == user_id,
+            ExamPrepPlan.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(ExamPrepSyllabus).where(
+            ExamPrepSyllabus.user_id == user_id,
+            ExamPrepSyllabus.class_id == class_id,
         )
     )
     await db.execute(
