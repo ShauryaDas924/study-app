@@ -332,6 +332,7 @@ export interface ExamPrepSyllabusSummary {
       is_comprehensive?: boolean;
       evidence_quote?: string | null;
     }[];
+    accepted_topics_count?: number;
     study_topics_count?: number;
     schedule_topics_count?: number;
     explicit_scope_count?: number;

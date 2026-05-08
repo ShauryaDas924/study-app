@@ -140,8 +140,9 @@ export default function ExamPrepPlannerPanel() {
               <div className="mt-2 space-y-2">
                 {syllabiQ.data.slice(0, 4).map((syllabus) => {
                   const topicCount =
+                    syllabus.parsed_summary.accepted_topics_count ??
                     Number(syllabus.parsed_summary.study_topics_count ?? 0) +
-                    Number(syllabus.parsed_summary.schedule_topics_count ?? 0);
+                      Number(syllabus.parsed_summary.schedule_topics_count ?? 0);
                   return (
                     <button
                       key={syllabus.id}
