@@ -94,6 +94,15 @@ def extract_from_ppt(file_bytes: bytes) -> str:
     return text
 
 
+def extract_from_plain_text(file_bytes: bytes) -> str:
+    for encoding in ("utf-8", "utf-16", "latin-1"):
+        try:
+            return file_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return file_bytes.decode("utf-8", errors="ignore")
+
+
 # ------------------------
 # MAIN ROUTER FUNCTION
 # ------------------------
@@ -117,7 +126,62 @@ async def extract_text(filename: str, file_bytes: bytes, math_mode: bool = False
     if filename.endswith((".pptx", ".ppt")):
         return extract_from_ppt(file_bytes)
 
+    if filename.endswith((".txt", ".md")):
+        return extract_from_plain_text(file_bytes)
+
     return "Unsupported file type"
+
+
+async def extract_text_with_source(filename: str, file_bytes: bytes, math_mode: bool = False) -> dict:
+    """
+    Extract text while keeping lightweight source metadata for exam-prep evidence.
+    Existing callers should keep using extract_text; this helper is additive.
+    """
+    original_filename = filename or "uploaded_material"
+    lower = original_filename.lower()
+
+    if lower.endswith(".pdf"):
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        pages = []
+        full_text_parts = []
+
+        for index, page in enumerate(doc, start=1):
+            page_text = page.get_text()
+
+            if math_mode and (len(page_text or "") < 200 or "  " in (page_text or "")):
+                pix = page.get_pixmap(dpi=300)
+                page_text = await extract_from_image(pix.tobytes("png"))
+
+            page_text = str(page_text or "").strip()
+            if page_text:
+                pages.append(
+                    {
+                        "page": index,
+                        "start_char": sum(len(part) + 1 for part in full_text_parts),
+                        "text": page_text,
+                    }
+                )
+                full_text_parts.append(f"[Page {index}]\n{page_text}")
+
+        return {
+            "text": "\n\n".join(full_text_parts).strip(),
+            "pages": pages,
+            "source_ref": {
+                "filename": original_filename,
+                "page_count": len(doc),
+                "extraction_mode": "pdf_pages",
+            },
+        }
+
+    text = await extract_text(original_filename, file_bytes, math_mode=math_mode)
+    return {
+        "text": text,
+        "pages": [],
+        "source_ref": {
+            "filename": original_filename,
+            "extraction_mode": "single_text_block",
+        },
+    }
 
 
 # ------------------------

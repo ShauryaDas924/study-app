@@ -21,6 +21,14 @@ export default function ExamPrepForm({
   setMinutes,
   intensity,
   setIntensity,
+  targetScore,
+  setTargetScore,
+  targetGrade,
+  setTargetGrade,
+  currentScores,
+  setCurrentScores,
+  weakTopics,
+  setWeakTopics,
   onGenerate,
   isGenerating,
 }: {
@@ -35,6 +43,14 @@ export default function ExamPrepForm({
   setMinutes: (value: number) => void;
   intensity: ExamPrepIntensity;
   setIntensity: (value: ExamPrepIntensity) => void;
+  targetScore?: string;
+  setTargetScore?: (value: string) => void;
+  targetGrade?: string;
+  setTargetGrade?: (value: string) => void;
+  currentScores?: string;
+  setCurrentScores?: (value: string) => void;
+  weakTopics?: string;
+  setWeakTopics?: (value: string) => void;
   onGenerate: () => void;
   isGenerating: boolean;
 }) {
@@ -83,9 +99,38 @@ export default function ExamPrepForm({
       </div>
 
       <div className="flex items-end">
-        <Button className="w-full" onClick={onGenerate} disabled={isGenerating || !selectedSyllabusId}>
+        <Button className="w-full" onClick={onGenerate} disabled={isGenerating}>
           {isGenerating ? "Generating..." : "Generate Plan"}
         </Button>
+      </div>
+
+      <div>
+        <div className="text-xs text-slate-500 mb-1">Target score</div>
+        <Input value={targetScore ?? ""} onChange={(e) => setTargetScore?.(e.target.value)} placeholder="90" />
+      </div>
+
+      <div>
+        <div className="text-xs text-slate-500 mb-1">Target grade</div>
+        <Input value={targetGrade ?? ""} onChange={(e) => setTargetGrade?.(e.target.value)} placeholder="A-" />
+      </div>
+
+      <div className="md:col-span-2">
+        <div className="text-xs text-slate-500 mb-1">Current scores</div>
+        <Input
+          value={currentScores ?? ""}
+          onChange={(e) => setCurrentScores?.(e.target.value)}
+          placeholder="HW avg 82, quiz avg 76"
+        />
+      </div>
+
+      <div className="md:col-span-4">
+        <div className="text-xs text-slate-500 mb-1">Known weak topics</div>
+        <textarea
+          value={weakTopics ?? ""}
+          onChange={(e) => setWeakTopics?.(e.target.value)}
+          placeholder="Separate topics with commas"
+          className="w-full app-input min-h-20 px-3 py-2 text-sm"
+        />
       </div>
     </div>
   );

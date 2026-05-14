@@ -1,16 +1,19 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models import (
     Class,
     Concept,
+    ExamPrepExtractedQuestion,
+    ExamPrepMaterial,
     ExamPrepPlan,
+    ExamPrepRecommendedQuestion,
     ExamPrepSyllabus,
     ExamPrepTask,
     ExamPrepTopicPrediction,
@@ -21,13 +24,20 @@ from app.services.exam_prep import (
     VALID_INTENSITIES,
     VALID_TASK_STATUSES,
     apply_prediction_ids_to_plan,
+    build_material_topic_predictions,
     build_plan_days,
+    build_plan_variants,
     build_task_rows_from_plan,
     build_topic_predictions,
+    extract_exam_prep_material_text,
+    extract_questions_from_material_text,
     extract_syllabus_text,
+    merge_topic_prediction_sets,
+    normalize_material_type,
     parse_exam_datetime,
     parse_syllabus,
     parsed_summary,
+    select_recommended_questions_for_topics,
 )
 
 router = APIRouter(prefix="/plan/exam-prep", tags=["exam-prep"])
@@ -35,11 +45,20 @@ router = APIRouter(prefix="/plan/exam-prep", tags=["exam-prep"])
 
 class GenerateExamPrepIn(BaseModel):
     class_id: UUID
-    syllabus_id: UUID
+    syllabus_id: UUID | None = None
     exam_title: str
-    exam_date_iso: str
+    exam_date_iso: str | None = None
+    exam_date: str | None = None
+    available_days: int | None = None
     available_minutes_per_day: int = 60
+    minutes_per_day: int | None = None
     intensity: str = "balanced"
+    target_score: float | None = None
+    target_grade: str | None = None
+    current_scores_json: dict | None = None
+    weak_topics: list[str] | None = None
+    selected_material_ids: list[UUID] | None = None
+    active: bool = True
 
 
 class CreateTasksIn(BaseModel):
@@ -93,6 +112,62 @@ def serialize_task(task: ExamPrepTask) -> dict:
     }
 
 
+def serialize_material(material: ExamPrepMaterial, question_count: int | None = None) -> dict:
+    return {
+        "id": str(material.id),
+        "class_id": str(material.class_id),
+        "filename": material.filename,
+        "mime_type": material.mime_type,
+        "material_type": material.material_type,
+        "extraction_status": material.extraction_status,
+        "parse_error": material.parse_error,
+        "metadata_json": material.metadata_json or {},
+        "question_count": int(question_count or 0),
+        "created_at": material.created_at.isoformat() if material.created_at else None,
+        "updated_at": material.updated_at.isoformat() if material.updated_at else None,
+    }
+
+
+def serialize_question(question: ExamPrepExtractedQuestion, material: ExamPrepMaterial | None = None) -> dict:
+    return {
+        "id": str(question.id),
+        "class_id": str(question.class_id),
+        "material_id": str(question.material_id),
+        "problem_number": question.problem_number,
+        "prompt_text": question.prompt_text,
+        "answer_text": question.answer_text,
+        "solution_text": question.solution_text,
+        "topic_name": question.topic_name,
+        "concept_id": str(question.concept_id) if question.concept_id else None,
+        "source_ref_json": question.source_ref_json or {},
+        "confidence": float(question.confidence) if question.confidence is not None else None,
+        "extraction_json": question.extraction_json or {},
+        "created_at": question.created_at.isoformat() if question.created_at else None,
+        "material": serialize_material(material) if material else None,
+    }
+
+
+def serialize_recommendation(
+    rec: ExamPrepRecommendedQuestion,
+    question: ExamPrepExtractedQuestion | None = None,
+    material: ExamPrepMaterial | None = None,
+) -> dict:
+    return {
+        "id": str(rec.id),
+        "class_id": str(rec.class_id),
+        "plan_id": str(rec.plan_id),
+        "extracted_question_id": str(rec.extracted_question_id),
+        "topic_prediction_id": str(rec.topic_prediction_id) if rec.topic_prediction_id else None,
+        "rank": int(rec.rank or 0),
+        "why_selected": rec.why_selected,
+        "evidence_json": rec.evidence_json or {},
+        "confidence": float(rec.confidence) if rec.confidence is not None else None,
+        "status": rec.status,
+        "created_at": rec.created_at.isoformat() if rec.created_at else None,
+        "question": serialize_question(question, material) if question else None,
+    }
+
+
 def serialize_plan_summary(plan: ExamPrepPlan) -> dict:
     plan_json = plan.plan_json or {}
     warnings = plan_json.get("warnings") or []
@@ -100,13 +175,19 @@ def serialize_plan_summary(plan: ExamPrepPlan) -> dict:
     return {
         "id": str(plan.id),
         "class_id": str(plan.class_id),
-        "syllabus_id": str(plan.syllabus_id),
+        "syllabus_id": str(plan.syllabus_id) if plan.syllabus_id else None,
         "title": plan.title,
         "exam_title": plan.exam_title,
         "exam_date": plan.exam_date.isoformat() if plan.exam_date else None,
         "available_minutes_per_day": int(plan.available_minutes_per_day or 0),
         "intensity": plan.intensity,
         "status": plan.status,
+        "active": bool(getattr(plan, "active", True)),
+        "target_score": float(plan.target_score) if plan.target_score is not None else None,
+        "target_grade": plan.target_grade,
+        "current_scores_json": plan.current_scores_json or {},
+        "weak_topics_json": plan.weak_topics_json or [],
+        "selected_material_ids": plan.selected_material_ids or [],
         "topic_count": len(topics),
         "warning_count": len(warnings),
         "created_at": plan.created_at.isoformat() if plan.created_at else None,
@@ -140,6 +221,240 @@ async def get_owned_plan(db: AsyncSession, user_id: UUID, plan_id: UUID) -> Exam
         raise HTTPException(404, "Plan not found")
     await ensure_class_owned(db, user_id, plan.class_id)
     return plan
+
+
+async def get_owned_material(db: AsyncSession, user_id: UUID, material_id: UUID) -> ExamPrepMaterial:
+    res = await db.execute(
+        select(ExamPrepMaterial).where(
+            ExamPrepMaterial.id == material_id,
+            ExamPrepMaterial.user_id == user_id,
+        )
+    )
+    material = res.scalar_one_or_none()
+    if not material:
+        raise HTTPException(404, "Material not found")
+    await ensure_class_owned(db, user_id, material.class_id)
+    return material
+
+
+async def load_recommendations_for_plan(db: AsyncSession, user_id: UUID, plan: ExamPrepPlan) -> list[dict]:
+    rec_res = await db.execute(
+        select(ExamPrepRecommendedQuestion)
+        .where(
+            ExamPrepRecommendedQuestion.user_id == user_id,
+            ExamPrepRecommendedQuestion.class_id == plan.class_id,
+            ExamPrepRecommendedQuestion.plan_id == plan.id,
+        )
+        .order_by(ExamPrepRecommendedQuestion.rank.asc(), ExamPrepRecommendedQuestion.created_at.asc())
+    )
+    recs = rec_res.scalars().all()
+    if not recs:
+        return []
+
+    question_ids = [rec.extracted_question_id for rec in recs]
+    q_res = await db.execute(
+        select(ExamPrepExtractedQuestion).where(
+            ExamPrepExtractedQuestion.user_id == user_id,
+            ExamPrepExtractedQuestion.class_id == plan.class_id,
+            ExamPrepExtractedQuestion.id.in_(question_ids),
+        )
+    )
+    questions = {q.id: q for q in q_res.scalars().all()}
+    material_ids = [q.material_id for q in questions.values()]
+    materials = {}
+    if material_ids:
+        m_res = await db.execute(
+            select(ExamPrepMaterial).where(
+                ExamPrepMaterial.user_id == user_id,
+                ExamPrepMaterial.class_id == plan.class_id,
+                ExamPrepMaterial.id.in_(material_ids),
+            )
+        )
+        materials = {m.id: m for m in m_res.scalars().all()}
+
+    return [
+        serialize_recommendation(
+            rec,
+            questions.get(rec.extracted_question_id),
+            materials.get(questions[rec.extracted_question_id].material_id) if rec.extracted_question_id in questions else None,
+        )
+        for rec in recs
+    ]
+
+
+@router.post("/materials/upload")
+async def upload_material(
+    class_id: UUID = Form(...),
+    material_type: str = Form(...),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
+):
+    await ensure_class_owned(db, user_id, class_id)
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "Missing file content")
+
+    normalized_type = normalize_material_type(material_type)
+    material = ExamPrepMaterial(
+        user_id=user_id,
+        class_id=class_id,
+        filename=file.filename or "exam-prep-material",
+        mime_type=file.content_type,
+        material_type=normalized_type,
+        extraction_status="pending",
+        metadata_json={"requested_material_type": material_type},
+    )
+    db.add(material)
+    await db.flush()
+
+    try:
+        raw_text, metadata, warnings = await extract_exam_prep_material_text(
+            file.filename or "exam-prep-material",
+            content,
+        )
+        material.raw_text = raw_text
+        material.extraction_status = "success"
+        material.parse_error = None
+        material.metadata_json = {
+            **(metadata or {}),
+            "requested_material_type": material_type,
+            "normalized_material_type": normalized_type,
+            "warnings": warnings,
+        }
+    except Exception as exc:
+        material.extraction_status = "failed"
+        material.parse_error = str(exc)
+        material.raw_text = None
+
+    await db.commit()
+    await db.refresh(material)
+
+    if material.extraction_status == "failed":
+        return {**serialize_material(material), "warnings": [material.parse_error]}
+
+    return serialize_material(material)
+
+
+@router.get("/materials")
+async def list_materials(
+    class_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
+):
+    await ensure_class_owned(db, user_id, class_id)
+    res = await db.execute(
+        select(ExamPrepMaterial)
+        .where(
+            ExamPrepMaterial.user_id == user_id,
+            ExamPrepMaterial.class_id == class_id,
+        )
+        .order_by(ExamPrepMaterial.created_at.desc())
+    )
+    materials = res.scalars().all()
+    if not materials:
+        return []
+
+    count_res = await db.execute(
+        select(ExamPrepExtractedQuestion.material_id, func.count().label("cnt"))
+        .where(
+            ExamPrepExtractedQuestion.user_id == user_id,
+            ExamPrepExtractedQuestion.class_id == class_id,
+            ExamPrepExtractedQuestion.material_id.in_([m.id for m in materials]),
+        )
+        .group_by(ExamPrepExtractedQuestion.material_id)
+    )
+    counts = {row[0]: row[1] for row in count_res.fetchall()}
+    return [serialize_material(material, counts.get(material.id, 0)) for material in materials]
+
+
+@router.post("/materials/{material_id}/extract-questions")
+async def extract_material_questions(
+    material_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
+):
+    material = await get_owned_material(db, user_id, material_id)
+    if material.extraction_status != "success" or not material.raw_text:
+        raise HTTPException(400, "Material text is not available for question extraction")
+
+    question_payloads, warnings = await extract_questions_from_material_text(
+        material.raw_text,
+        material.filename,
+        material.material_type,
+    )
+
+    await db.execute(
+        delete(ExamPrepExtractedQuestion).where(
+            ExamPrepExtractedQuestion.user_id == user_id,
+            ExamPrepExtractedQuestion.class_id == material.class_id,
+            ExamPrepExtractedQuestion.material_id == material.id,
+        )
+    )
+
+    created: list[ExamPrepExtractedQuestion] = []
+    for payload in question_payloads:
+        question = ExamPrepExtractedQuestion(
+            user_id=user_id,
+            class_id=material.class_id,
+            material_id=material.id,
+            problem_number=payload.get("problem_number"),
+            prompt_text=payload["prompt_text"],
+            answer_text=payload.get("answer_text"),
+            solution_text=payload.get("solution_text"),
+            topic_name=payload.get("topic_name"),
+            source_ref_json=payload.get("source_ref") or {},
+            confidence=payload.get("confidence"),
+            extraction_json={
+                "evidence_quote": payload.get("evidence_quote"),
+                "raw_item": payload.get("raw_item"),
+                "warnings": warnings,
+            },
+        )
+        db.add(question)
+        created.append(question)
+
+    material.metadata_json = {
+        **(material.metadata_json or {}),
+        "question_extraction_warnings": warnings,
+        "question_count": len(created),
+    }
+    await db.commit()
+
+    q_res = await db.execute(
+        select(ExamPrepExtractedQuestion)
+        .where(
+            ExamPrepExtractedQuestion.user_id == user_id,
+            ExamPrepExtractedQuestion.class_id == material.class_id,
+            ExamPrepExtractedQuestion.material_id == material.id,
+        )
+        .order_by(ExamPrepExtractedQuestion.created_at.asc())
+    )
+    questions = q_res.scalars().all()
+    return {
+        "material": serialize_material(material, len(questions)),
+        "questions": [serialize_question(question, material) for question in questions],
+        "warnings": warnings,
+    }
+
+
+@router.get("/materials/{material_id}/questions")
+async def list_material_questions(
+    material_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
+):
+    material = await get_owned_material(db, user_id, material_id)
+    res = await db.execute(
+        select(ExamPrepExtractedQuestion)
+        .where(
+            ExamPrepExtractedQuestion.user_id == user_id,
+            ExamPrepExtractedQuestion.class_id == material.class_id,
+            ExamPrepExtractedQuestion.material_id == material.id,
+        )
+        .order_by(ExamPrepExtractedQuestion.created_at.asc())
+    )
+    return [serialize_question(question, material) for question in res.scalars().all()]
 
 
 @router.post("/syllabi")
@@ -227,26 +542,61 @@ async def generate_exam_prep_plan(
     user_id: UUID = Depends(get_current_user_id),
 ):
     await ensure_class_owned(db, user_id, payload.class_id)
-    syllabus = await get_owned_syllabus(db, user_id, payload.class_id, payload.syllabus_id)
+    syllabus = None
+    if payload.syllabus_id:
+        syllabus = await get_owned_syllabus(db, user_id, payload.class_id, payload.syllabus_id)
 
     if payload.intensity not in VALID_INTENSITIES:
         raise HTTPException(400, "Intensity must be light, balanced, or aggressive")
 
-    if payload.available_minutes_per_day < 10:
+    minutes_per_day = payload.minutes_per_day or payload.available_minutes_per_day
+    if minutes_per_day < 10:
         raise HTTPException(400, "available_minutes_per_day must be at least 10")
 
-    if payload.available_minutes_per_day > 480:
+    if minutes_per_day > 480:
         raise HTTPException(400, "available_minutes_per_day is too high")
 
     exam_title = payload.exam_title.strip() or "Exam"
 
-    try:
-        exam_date = parse_exam_datetime(payload.exam_date_iso)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+    exam_date_input = payload.exam_date_iso or payload.exam_date
+    if exam_date_input:
+        try:
+            exam_date = parse_exam_datetime(exam_date_input)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    elif payload.available_days:
+        exam_date = datetime.now(timezone.utc) + timedelta(days=max(1, payload.available_days))
+    else:
+        raise HTTPException(400, "Provide exam_date_iso, exam_date, or available_days")
 
     if exam_date <= datetime.now(timezone.utc):
         raise HTTPException(400, "Exam date must be in the future")
+
+    material_query = select(ExamPrepMaterial).where(
+        ExamPrepMaterial.user_id == user_id,
+        ExamPrepMaterial.class_id == payload.class_id,
+    )
+    if payload.selected_material_ids:
+        material_query = material_query.where(ExamPrepMaterial.id.in_(payload.selected_material_ids))
+    materials = (await db.execute(material_query.order_by(ExamPrepMaterial.created_at.desc()))).scalars().all()
+
+    if payload.selected_material_ids and len(materials) != len(set(payload.selected_material_ids)):
+        raise HTTPException(404, "One or more selected materials were not found")
+
+    selected_material_ids = [str(material.id) for material in materials]
+
+    questions = []
+    if materials:
+        q_res = await db.execute(
+            select(ExamPrepExtractedQuestion)
+            .where(
+                ExamPrepExtractedQuestion.user_id == user_id,
+                ExamPrepExtractedQuestion.class_id == payload.class_id,
+                ExamPrepExtractedQuestion.material_id.in_([m.id for m in materials]),
+            )
+            .order_by(ExamPrepExtractedQuestion.created_at.asc())
+        )
+        questions = q_res.scalars().all()
 
     cres = await db.execute(
         select(Concept).where(
@@ -267,43 +617,86 @@ async def generate_exam_prep_plan(
         )
         mastery_map = {m.concept_id: float(m.mastery_prob) for m in mres.scalars().all()}
 
-    topics, topic_warnings = build_topic_predictions(
-        parsed_json=syllabus.parsed_json or {},
-        raw_text=syllabus.raw_text,
+    syllabus_topics: list[dict] = []
+    topic_warnings: list[str] = []
+    if syllabus:
+        syllabus_topics, topic_warnings = build_topic_predictions(
+            parsed_json=syllabus.parsed_json or {},
+            raw_text=syllabus.raw_text,
+            concepts=concepts,
+            mastery_map=mastery_map,
+        )
+
+    material_topics, material_warnings = build_material_topic_predictions(
+        materials=materials,
+        questions=questions,
         concepts=concepts,
         mastery_map=mastery_map,
+        weak_topics=payload.weak_topics or [],
     )
+    topics = merge_topic_prediction_sets(material_topics, syllabus_topics)
 
     plan_days, plan_warnings, starts_on, ends_on = build_plan_days(
         exam_date=exam_date,
         topics=topics,
-        available_minutes_per_day=payload.available_minutes_per_day,
+        available_minutes_per_day=minutes_per_day,
         intensity=payload.intensity,
     )
 
     all_warnings = []
     for source in [
-        (syllabus.parsed_json or {}).get("warnings") or [],
+        (syllabus.parsed_json or {}).get("warnings") if syllabus else [],
         topic_warnings,
+        material_warnings,
         plan_warnings,
     ]:
-        for warning in source:
+        for warning in (source or []):
             if warning and warning not in all_warnings:
                 all_warnings.append(warning)
+
+    if materials and not questions:
+        all_warnings.append("Uploaded materials exist, but no extracted questions are available yet.")
+    if not materials and not syllabus:
+        all_warnings.append("No uploaded materials or syllabus were selected, so evidence is limited.")
+
+    if payload.active:
+        await db.execute(
+            update(ExamPrepPlan)
+            .where(
+                ExamPrepPlan.user_id == user_id,
+                ExamPrepPlan.class_id == payload.class_id,
+            )
+            .values(active=False)
+        )
+
+    variants = build_plan_variants(plan_days, topics, recommended_count=0, warnings=all_warnings)
 
     plan = ExamPrepPlan(
         user_id=user_id,
         class_id=payload.class_id,
-        syllabus_id=syllabus.id,
+        syllabus_id=syllabus.id if syllabus else None,
         title=f"{exam_title} prep plan",
         exam_title=exam_title,
         exam_date=exam_date,
-        available_minutes_per_day=payload.available_minutes_per_day,
+        available_minutes_per_day=minutes_per_day,
         intensity=payload.intensity,
         starts_on=starts_on,
         ends_on=ends_on,
-        plan_json={"topics": topics, "plan_days": plan_days, "warnings": all_warnings},
+        plan_json={
+            "topics": topics,
+            "plan_days": plan_days,
+            "warnings": all_warnings,
+            "minimum_plan": variants["minimum_plan"],
+            "strong_plan": variants["strong_plan"],
+            "evidence_language": "Evidence-based plan based on uploaded materials; not a guaranteed prediction.",
+        },
         status="active",
+        target_score=payload.target_score,
+        target_grade=(payload.target_grade or None),
+        current_scores_json=payload.current_scores_json or {},
+        weak_topics_json=payload.weak_topics or [],
+        selected_material_ids=selected_material_ids,
+        active=payload.active,
     )
     db.add(plan)
     await db.flush()
@@ -317,7 +710,7 @@ async def generate_exam_prep_plan(
         prediction = ExamPrepTopicPrediction(
             user_id=user_id,
             class_id=payload.class_id,
-            syllabus_id=syllabus.id,
+            syllabus_id=syllabus.id if syllabus else None,
             exam_prep_plan_id=plan.id,
             topic_name=topic["topic_name"],
             matched_concept_ids=matched_concept_ids,
@@ -335,14 +728,51 @@ async def generate_exam_prep_plan(
         topic["matched_concept_ids"] = matched_concept_ids
 
     plan_days = apply_prediction_ids_to_plan(plan_days, topics)
-    plan.plan_json = {"topics": topics, "plan_days": plan_days, "warnings": all_warnings}
+    recommendation_payloads = select_recommended_questions_for_topics(topics, questions)
+    variants = build_plan_variants(
+        plan_days,
+        topics,
+        recommended_count=len(recommendation_payloads),
+        warnings=all_warnings,
+    )
+    plan.plan_json = {
+        "topics": topics,
+        "plan_days": plan_days,
+        "warnings": all_warnings,
+        "minimum_plan": variants["minimum_plan"],
+        "strong_plan": variants["strong_plan"],
+        "evidence_language": "Evidence-based plan based on uploaded materials; not a guaranteed prediction.",
+    }
+
+    recommendations: list[ExamPrepRecommendedQuestion] = []
+    for payload_rec in recommendation_payloads:
+        rec = ExamPrepRecommendedQuestion(
+            user_id=user_id,
+            class_id=payload.class_id,
+            plan_id=plan.id,
+            extracted_question_id=UUID(payload_rec["extracted_question_id"]),
+            topic_prediction_id=UUID(str(payload_rec["topic_prediction_id"])) if payload_rec.get("topic_prediction_id") else None,
+            rank=payload_rec["rank"],
+            why_selected=payload_rec["why_selected"],
+            evidence_json=payload_rec["evidence_json"],
+            confidence=payload_rec["confidence"],
+            status="recommended",
+        )
+        db.add(rec)
+        recommendations.append(rec)
+
     await db.commit()
     await db.refresh(plan)
+
+    recommendation_details = await load_recommendations_for_plan(db, user_id, plan)
 
     return {
         "exam_prep_plan_id": str(plan.id),
         "topics": topics,
         "plan_days": plan_days,
+        "minimum_plan": variants["minimum_plan"],
+        "strong_plan": variants["strong_plan"],
+        "recommended_questions": recommendation_details,
         "warnings": all_warnings,
     }
 
@@ -350,16 +780,19 @@ async def generate_exam_prep_plan(
 @router.get("/plans")
 async def list_plans(
     class_id: UUID,
+    active: bool | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
     await ensure_class_owned(db, user_id, class_id)
+    query = select(ExamPrepPlan).where(
+        ExamPrepPlan.user_id == user_id,
+        ExamPrepPlan.class_id == class_id,
+    )
+    if active is not None:
+        query = query.where(ExamPrepPlan.active == active)
     res = await db.execute(
-        select(ExamPrepPlan)
-        .where(
-            ExamPrepPlan.user_id == user_id,
-            ExamPrepPlan.class_id == class_id,
-        )
+        query
         .order_by(ExamPrepPlan.created_at.desc())
         .limit(30)
     )
@@ -402,8 +835,21 @@ async def get_plan(
         "topics": topics or (plan.plan_json or {}).get("topics") or [],
         "plan_days": (plan.plan_json or {}).get("plan_days") or [],
         "warnings": (plan.plan_json or {}).get("warnings") or [],
+        "minimum_plan": (plan.plan_json or {}).get("minimum_plan"),
+        "strong_plan": (plan.plan_json or {}).get("strong_plan"),
         "tasks": tasks,
+        "recommended_questions": await load_recommendations_for_plan(db, user_id, plan),
     }
+
+
+@router.get("/plans/{plan_id}/questions")
+async def get_plan_questions(
+    plan_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
+):
+    plan = await get_owned_plan(db, user_id, plan_id)
+    return await load_recommendations_for_plan(db, user_id, plan)
 
 
 @router.post("/plans/{plan_id}/tasks")

@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   type ExamPrepIntensity,
+  type ExamPrepMaterial,
   type GenerateExamPrepPlanResponse,
   type UUID,
 } from "@/lib/api";
@@ -15,6 +16,9 @@ import ExamPrepForm from "@/components/exam-prep/ExamPrepForm";
 import TopicPredictionTable from "@/components/exam-prep/TopicPredictionTable";
 import StudyPlanTimeline from "@/components/exam-prep/StudyPlanTimeline";
 import PlanTaskList from "@/components/exam-prep/PlanTaskList";
+import ExamPrepMaterialUploader from "@/components/exam-prep/ExamPrepMaterialUploader";
+import ExamPrepMaterialsList from "@/components/exam-prep/ExamPrepMaterialsList";
+import RecommendedQuestionList from "@/components/exam-prep/RecommendedQuestionList";
 
 function defaultExamDate() {
   const date = new Date();
@@ -48,6 +52,12 @@ export default function ExamPrepPlannerPanel() {
   const [examDateIso, setExamDateIso] = useState(defaultExamDate);
   const [minutes, setMinutes] = useState(60);
   const [intensity, setIntensity] = useState<ExamPrepIntensity>("balanced");
+  const [targetScore, setTargetScore] = useState("");
+  const [targetGrade, setTargetGrade] = useState("");
+  const [currentScores, setCurrentScores] = useState("");
+  const [weakTopics, setWeakTopics] = useState("");
+  const [selectedMaterialIds, setSelectedMaterialIds] = useState<UUID[]>([]);
+  const [materialSelectionTouched, setMaterialSelectionTouched] = useState(false);
   const [activePlanId, setActivePlanId] = useState<UUID | null>(null);
   const [generated, setGenerated] = useState<GenerateExamPrepPlanResponse | null>(null);
 
@@ -63,30 +73,57 @@ export default function ExamPrepPlannerPanel() {
     enabled: Boolean(classId),
   });
 
+  const materialsQ = useQuery({
+    queryKey: ["exam-prep-materials", classId],
+    queryFn: () => api.listExamPrepMaterials(classId),
+    enabled: Boolean(classId),
+  });
+
   const planQ = useQuery({
     queryKey: ["exam-prep-plan", activePlanId],
     queryFn: () => api.getExamPrepPlan(activePlanId as UUID),
     enabled: Boolean(activePlanId),
   });
 
-  useEffect(() => {
-    if (!selectedSyllabusId && syllabiQ.data?.length) {
-      setSelectedSyllabusId(syllabiQ.data[0].id);
-    }
-  }, [selectedSyllabusId, syllabiQ.data]);
+  const effectiveSelectedSyllabusId = selectedSyllabusId || syllabiQ.data?.[0]?.id || "";
+  const allMaterialIds = useMemo(() => (materialsQ.data ?? []).map((material) => material.id), [materialsQ.data]);
+  const effectiveSelectedMaterialIds = materialSelectionTouched ? selectedMaterialIds : allMaterialIds;
+  const selectedMaterials = useMemo(
+    () => (materialsQ.data ?? []).filter((material) => effectiveSelectedMaterialIds.includes(material.id)),
+    [effectiveSelectedMaterialIds, materialsQ.data]
+  );
+  const selectedQuestionCount = selectedMaterials.reduce((total, material) => total + Number(material.question_count || 0), 0);
+
+  function parseCurrentScores() {
+    const text = currentScores.trim();
+    return text ? { notes: text } : {};
+  }
+
+  function parseWeakTopics() {
+    return weakTopics
+      .split(",")
+      .map((topic) => topic.trim())
+      .filter(Boolean);
+  }
 
   const generateM = useMutation({
     mutationFn: () => {
       if (!classId) throw new Error("Select a course first.");
-      if (!selectedSyllabusId) throw new Error("Upload or select a syllabus first.");
 
       return api.generateExamPrepPlan({
         class_id: classId,
-        syllabus_id: selectedSyllabusId,
+        syllabus_id: effectiveSelectedSyllabusId || null,
         exam_title: examTitle,
         exam_date_iso: new Date(examDateIso).toISOString(),
         available_minutes_per_day: minutes,
+        minutes_per_day: minutes,
         intensity,
+        target_score: targetScore.trim() ? Number(targetScore) : null,
+        target_grade: targetGrade.trim() || null,
+        current_scores_json: parseCurrentScores(),
+        weak_topics: parseWeakTopics(),
+        selected_material_ids: effectiveSelectedMaterialIds,
+        active: true,
       });
     },
     onSuccess: async (data) => {
@@ -94,6 +131,7 @@ export default function ExamPrepPlannerPanel() {
       setActivePlanId(data.exam_prep_plan_id);
       await qc.invalidateQueries({ queryKey: ["exam-prep-plans", classId] });
       await qc.invalidateQueries({ queryKey: ["exam-prep-plan", data.exam_prep_plan_id] });
+      await qc.invalidateQueries({ queryKey: ["exam-prep-materials", classId] });
     },
   });
 
@@ -114,6 +152,9 @@ export default function ExamPrepPlannerPanel() {
     return Array.from(new Set(warnings));
   }, [generated?.warnings, planQ.data?.warnings]);
   const displayedTasks = planQ.data?.tasks ?? createTasksM.data?.tasks ?? [];
+  const displayedRecommendations = planQ.data?.recommended_questions ?? generated?.recommended_questions ?? [];
+  const displayedMinimumPlan = planQ.data?.minimum_plan ?? generated?.minimum_plan;
+  const displayedStrongPlan = planQ.data?.strong_plan ?? generated?.strong_plan;
 
   if (!classId) {
     return (
@@ -134,6 +175,25 @@ export default function ExamPrepPlannerPanel() {
             }}
           />
 
+          <ExamPrepMaterialUploader
+            classId={classId}
+            onUploaded={(material: ExamPrepMaterial) => {
+              if (materialSelectionTouched) {
+                setSelectedMaterialIds((ids) => Array.from(new Set([...ids, material.id])));
+              }
+            }}
+          />
+
+          <ExamPrepMaterialsList
+            classId={classId}
+            materials={materialsQ.data ?? []}
+            selectedIds={effectiveSelectedMaterialIds}
+            setSelectedIds={(ids) => {
+              setMaterialSelectionTouched(true);
+              setSelectedMaterialIds(ids);
+            }}
+          />
+
           {syllabiQ.data?.length ? (
             <div className="rounded-xl border border-slate-100 p-3">
               <div className="text-sm font-medium text-slate-900">Uploaded syllabi</div>
@@ -149,8 +209,8 @@ export default function ExamPrepPlannerPanel() {
                       onClick={() => setSelectedSyllabusId(syllabus.id)}
                       className="block w-full rounded-lg border px-3 py-2 text-left text-sm transition"
                       style={{
-                        borderColor: selectedSyllabusId === syllabus.id ? "rgba(247,167,195,0.55)" : "var(--border-soft)",
-                        background: selectedSyllabusId === syllabus.id ? "var(--gradient-main)" : "rgba(255,255,255,0.72)",
+                        borderColor: effectiveSelectedSyllabusId === syllabus.id ? "rgba(247,167,195,0.55)" : "var(--border-soft)",
+                        background: effectiveSelectedSyllabusId === syllabus.id ? "var(--gradient-main)" : "rgba(255,255,255,0.72)",
                         color: "var(--text-main)",
                       }}
                     >
@@ -169,7 +229,7 @@ export default function ExamPrepPlannerPanel() {
         <div className="space-y-4">
           <ExamPrepForm
             syllabi={syllabiQ.data ?? []}
-            selectedSyllabusId={selectedSyllabusId}
+            selectedSyllabusId={effectiveSelectedSyllabusId as UUID}
             setSelectedSyllabusId={(id) => setSelectedSyllabusId(id as UUID)}
             examTitle={examTitle}
             setExamTitle={setExamTitle}
@@ -179,6 +239,14 @@ export default function ExamPrepPlannerPanel() {
             setMinutes={setMinutes}
             intensity={intensity}
             setIntensity={setIntensity}
+            targetScore={targetScore}
+            setTargetScore={setTargetScore}
+            targetGrade={targetGrade}
+            setTargetGrade={setTargetGrade}
+            currentScores={currentScores}
+            setCurrentScores={setCurrentScores}
+            weakTopics={weakTopics}
+            setWeakTopics={setWeakTopics}
             onGenerate={() => generateM.mutate()}
             isGenerating={generateM.isPending}
           />
@@ -190,6 +258,14 @@ export default function ExamPrepPlannerPanel() {
           ) : null}
 
           <Warnings warnings={displayedWarnings} />
+          {selectedMaterials.length > 0 && selectedQuestionCount === 0 ? (
+            <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-sm text-amber-800">
+              Extract questions from selected materials before generating a question-based plan.
+              <div className="mt-1 text-xs">
+                Plans are estimated from your uploaded evidence. Question recommendations require extracted questions.
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -206,7 +282,7 @@ export default function ExamPrepPlannerPanel() {
                 }}
                 className="rounded-full border border-slate-100 bg-slate-50 px-3 py-1 text-xs text-slate-700"
               >
-                {plan.exam_title} · {new Date(plan.exam_date).toLocaleDateString()}
+                {plan.exam_title} - {new Date(plan.exam_date).toLocaleDateString()}
               </button>
             ))}
           </div>
@@ -254,6 +330,46 @@ export default function ExamPrepPlannerPanel() {
             </div>
           </div>
           <StudyPlanTimeline days={displayedDays} />
+        </div>
+      ) : null}
+
+      {(displayedMinimumPlan || displayedStrongPlan) ? (
+        <div className="grid gap-3 md:grid-cols-2">
+          {displayedMinimumPlan ? (
+            <div className="rounded-xl border border-slate-100 p-4">
+              <div className="font-semibold text-slate-900">{displayedMinimumPlan.label}</div>
+              <div className="mt-2 space-y-1">
+                {displayedMinimumPlan.tasks.map((task) => (
+                  <div key={task} className="text-sm text-slate-600">{task}</div>
+                ))}
+              </div>
+              {displayedMinimumPlan.note ? <div className="mt-2 text-xs text-slate-500">{displayedMinimumPlan.note}</div> : null}
+            </div>
+          ) : null}
+
+          {displayedStrongPlan ? (
+            <div className="rounded-xl border border-slate-100 p-4">
+              <div className="font-semibold text-slate-900">{displayedStrongPlan.label}</div>
+              <div className="mt-2 space-y-1">
+                {displayedStrongPlan.tasks.map((task) => (
+                  <div key={task} className="text-sm text-slate-600">{task}</div>
+                ))}
+              </div>
+              {displayedStrongPlan.note ? <div className="mt-2 text-xs text-slate-500">{displayedStrongPlan.note}</div> : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {displayedRecommendations.length ? (
+        <div className="space-y-3">
+          <div>
+            <div className="text-lg font-semibold text-slate-900">Recommended Questions</div>
+            <div className="text-sm text-slate-500">
+              These are located questions from uploaded materials. No unlocated questions are recommended.
+            </div>
+          </div>
+          <RecommendedQuestionList recommendations={displayedRecommendations} />
         </div>
       ) : null}
 

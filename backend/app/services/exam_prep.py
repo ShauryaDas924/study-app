@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time, timezone, timedelta
 from uuid import UUID
 
-from app.services.file_extraction import extract_text
+from app.services.file_extraction import extract_text, extract_text_with_source
 from app.services.llm import openai_chat_create, safe_json_loads
 
 
@@ -18,6 +18,18 @@ MAX_PLAN_DAYS = 60
 VALID_INTENSITIES = {"light", "balanced", "aggressive"}
 VALID_TASK_TYPES = {"review", "practice", "flashcards", "mixed", "mock_exam"}
 VALID_TASK_STATUSES = {"pending", "done", "skipped"}
+VALID_MATERIAL_TYPES = {
+    "syllabus",
+    "notes",
+    "past_exam",
+    "past_homework",
+    "practice_bank",
+    "review_sheet",
+    "professor_announcement",
+    "answer_key",
+    "solutions",
+    "other",
+}
 
 STOPWORDS = {
     "and",
@@ -173,6 +185,37 @@ Schema:
   ],
   "warnings": string[]
 }
+"""
+
+QUESTION_EXTRACTION_PROMPT = """
+You extract visible exam-prep questions from uploaded course material.
+
+Return JSON only. Return a JSON array.
+
+Schema for each item:
+{
+  "problem_number": "string or null",
+  "prompt_text": "full visible question/problem text",
+  "answer_text": "answer text if explicitly present, otherwise null",
+  "solution_text": "solution text if explicitly present, otherwise null",
+  "topic_name": "short topic/category if visible or strongly implied, otherwise null",
+  "confidence": 0.0,
+  "source_ref": {
+    "page": "number or null",
+    "section": "string or null",
+    "problem_number": "string or null"
+  },
+  "evidence_quote": "short exact quote from the problem text"
+}
+
+Rules:
+- Extract only questions/problems that are visible in the provided text.
+- Do not invent problem numbers, answers, solutions, topics, or page numbers.
+- If answer or solution is unavailable, use null.
+- If the text is an answer key with no prompt, extract only if enough prompt/context is visible.
+- Keep prompt_text self-contained enough for a tutor to teach it.
+- Prefer fewer high-confidence questions over noisy fragments.
+- confidence is low when the boundary/source/topic is uncertain.
 """
 
 
@@ -1495,3 +1538,527 @@ def build_task_rows_from_plan(plan_json: dict) -> list[dict]:
                 }
             )
     return rows
+
+
+def normalize_material_type(value: str | None) -> str:
+    key = normalize_key(value or "other")
+    aliases = {
+        "past exams": "past_exam",
+        "past exam": "past_exam",
+        "exam": "past_exam",
+        "homework": "past_homework",
+        "past homework": "past_homework",
+        "practice banks": "practice_bank",
+        "problem sets": "practice_bank",
+        "problem set": "practice_bank",
+        "review sheets": "review_sheet",
+        "review guide": "review_sheet",
+        "announcements": "professor_announcement",
+        "announcement": "professor_announcement",
+        "answer keys": "answer_key",
+        "solutions manual": "solutions",
+    }
+    normalized = aliases.get(key, key.replace(" ", "_"))
+    return normalized if normalized in VALID_MATERIAL_TYPES else "other"
+
+
+async def extract_exam_prep_material_text(filename: str, file_bytes: bytes) -> tuple[str, dict, list[str]]:
+    warnings: list[str] = []
+    extracted = await extract_text_with_source(filename, file_bytes, math_mode=True)
+    raw_text = str(extracted.get("text") or "").replace("\r\n", "\n").replace("\r", "\n").replace("\u0000", "")
+    raw_text = re.sub(r"[ \t]+", " ", raw_text)
+    raw_text = re.sub(r"\n{4,}", "\n\n\n", raw_text).strip()
+
+    if not raw_text or raw_text.lower() == "unsupported file type":
+        raise ValueError("No text could be extracted from this file.")
+
+    if len(raw_text) < 120:
+        warnings.append("The extracted material text is short, so question extraction confidence may be low.")
+
+    metadata = {
+        "source_ref": extracted.get("source_ref") or {"filename": filename},
+        "pages": [
+            {
+                "page": page.get("page"),
+                "start_char": page.get("start_char"),
+                "char_count": len(str(page.get("text") or "")),
+            }
+            for page in (extracted.get("pages") or [])
+        ],
+        "warnings": warnings,
+    }
+    return raw_text, metadata, warnings
+
+
+def infer_topic_from_question_text(prompt: str) -> str:
+    tokens = [
+        token
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", (prompt or "").lower())
+        if token not in STOPWORDS and token not in GENERIC_TOPIC_WORDS
+    ]
+    if not tokens:
+        return "Mixed practice"
+
+    counts: dict[str, int] = {}
+    for token in tokens:
+        counts[token] = counts.get(token, 0) + 1
+    ranked = sorted(counts.items(), key=lambda item: (item[1], len(item[0])), reverse=True)
+    topic = " ".join(token for token, _ in ranked[:3]).strip()
+    return topic.title() if topic else "Mixed practice"
+
+
+def fallback_extract_questions(raw_text: str, filename: str, material_type: str) -> list[dict]:
+    text = raw_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"(?m)^\s*Page\s+(\d+)\s*$", r"[Page \1]", text)
+    parts = re.split(r"(?m)^\s*(?:Question\s+)?(\d{1,3}[.)])\s+", text)
+    questions: list[dict] = []
+
+    if len(parts) >= 3:
+        for index in range(1, len(parts), 2):
+            number = parts[index].strip()
+            body = parts[index + 1].strip() if index + 1 < len(parts) else ""
+            body = re.split(r"(?m)^\s*(?:Answer|Solution)\s*[:：]", body)[0].strip()
+            if len(body) < 35:
+                continue
+            page_match = re.search(r"\[Page\s+(\d+)\]", body)
+            prompt = re.sub(r"\[Page\s+\d+\]", "", body).strip()
+            questions.append(
+                {
+                    "problem_number": number.rstrip(".)"),
+                    "prompt_text": clip_text(prompt, 4000),
+                    "answer_text": None,
+                    "solution_text": None,
+                    "topic_name": infer_topic_from_question_text(prompt),
+                    "confidence": 0.35,
+                    "source_ref": {
+                        "filename": filename,
+                        "material_type": material_type,
+                        "page": int(page_match.group(1)) if page_match else None,
+                        "problem_number": number.rstrip(".)"),
+                        "extraction": "fallback_splitter",
+                    },
+                    "evidence_quote": clip_text(prompt, 220),
+                }
+            )
+
+    if not questions and len(text) >= 35:
+        questions.append(
+            {
+                "problem_number": None,
+                "prompt_text": clip_text(text, 4000),
+                "answer_text": None,
+                "solution_text": None,
+                "topic_name": infer_topic_from_question_text(text),
+                "confidence": 0.2,
+                "source_ref": {
+                    "filename": filename,
+                    "material_type": material_type,
+                    "page": None,
+                    "extraction": "single_block_fallback",
+                },
+                "evidence_quote": clip_text(text, 220),
+            }
+        )
+
+    return questions[:25]
+
+
+def normalize_extracted_question_item(item: dict, filename: str, material_type: str) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+
+    prompt = normalize_space(str(item.get("prompt_text") or ""))
+    if len(prompt) < 20:
+        return None
+
+    source_ref = item.get("source_ref") if isinstance(item.get("source_ref"), dict) else {}
+    source_ref = {
+        "filename": filename,
+        "material_type": material_type,
+        **source_ref,
+    }
+
+    problem_number = item.get("problem_number")
+    if problem_number is not None:
+        problem_number = clip_text(str(problem_number).strip(), 40) or None
+
+    topic_name = clean_topic_candidate(item.get("topic_name")) or infer_topic_from_question_text(prompt)
+    try:
+        confidence = clamp(float(item.get("confidence", 0.45)))
+    except Exception:
+        confidence = 0.45
+
+    return {
+        "problem_number": problem_number,
+        "prompt_text": clip_text(prompt, 6000),
+        "answer_text": clip_text(item.get("answer_text") or "", 4000) or None,
+        "solution_text": clip_text(item.get("solution_text") or "", 6000) or None,
+        "topic_name": clip_text(topic_name, 140) if topic_name else None,
+        "confidence": confidence,
+        "source_ref": source_ref,
+        "evidence_quote": clip_text(item.get("evidence_quote") or prompt, 320),
+        "raw_item": item,
+    }
+
+
+async def extract_questions_from_material_text(raw_text: str, filename: str, material_type: str) -> tuple[list[dict], list[str]]:
+    warnings: list[str] = []
+    material_type = normalize_material_type(material_type)
+    extraction_input = clip_text(raw_text, 18000)
+
+    try:
+        resp = await openai_chat_create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": QUESTION_EXTRACTION_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"Filename: {filename}\nMaterial type: {material_type}\n\nExtract questions from:\n{extraction_input}",
+                },
+            ],
+            temperature=0.0,
+        )
+        parsed = safe_json_loads(resp.choices[0].message.content)
+        if not isinstance(parsed, list):
+            raise ValueError("Question extractor returned non-array JSON.")
+
+        questions = [
+            normalized
+            for item in parsed
+            if (normalized := normalize_extracted_question_item(item, filename, material_type))
+        ]
+        if not questions:
+            raise ValueError("Question extractor found no usable questions.")
+    except Exception as exc:
+        warnings.append(f"Question extraction used a fallback parser: {exc}")
+        questions = fallback_extract_questions(raw_text, filename, material_type)
+
+    if not questions:
+        warnings.append("No located questions were found in this material.")
+    elif len(questions) < 3:
+        warnings.append("Only a few located questions were found in this material.")
+
+    return questions[:60], warnings
+
+
+def obj_value(obj, name: str, default=None):
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def evidence_from_matched_concepts(matched: list[dict], mastery_map: dict[UUID, float]) -> list[dict]:
+    evidence = []
+    for item in matched:
+        concept = item["concept"]
+        concept_quote = concept.evidence or concept.definition or concept.description
+        evidence.append(
+            {
+                "source": "concept",
+                "label": concept.name,
+                "quote": clip_text(concept_quote, 260) if concept_quote else None,
+                "concept_id": str(concept.id),
+            }
+        )
+        if concept.id in mastery_map:
+            evidence.append(
+                {
+                    "source": "mastery",
+                    "label": "Current mastery estimate",
+                    "quote": f"{round(float(mastery_map[concept.id]) * 100)}% mastery estimate",
+                    "concept_id": str(concept.id),
+                }
+            )
+    return evidence
+
+
+def build_material_topic_predictions(
+    materials: list,
+    questions: list,
+    concepts: list,
+    mastery_map: dict[UUID, float],
+    weak_topics: list[str] | None = None,
+) -> tuple[list[dict], list[str]]:
+    warnings: list[str] = []
+    material_map = {str(obj_value(material, "id")): material for material in materials}
+    weak_topics = [str(topic).strip() for topic in (weak_topics or []) if str(topic).strip()]
+    weak_keys = {topic_merge_key(topic) for topic in weak_topics}
+
+    grouped: dict[str, dict] = {}
+    for question in questions:
+        prompt = obj_value(question, "prompt_text", "") or ""
+        topic = clean_topic_candidate(obj_value(question, "topic_name")) or infer_topic_from_question_text(prompt)
+        key = topic_merge_key(topic)
+        if not key:
+            continue
+        material = material_map.get(str(obj_value(question, "material_id")))
+        material_type = obj_value(material, "material_type", "material") if material else "material"
+        filename = obj_value(material, "filename", "uploaded material") if material else "uploaded material"
+        row = grouped.setdefault(
+            key,
+            {
+                "topic_name": clip_text(topic, 140),
+                "questions": [],
+                "material_types": set(),
+                "filenames": set(),
+                "evidence": [],
+            },
+        )
+        row["questions"].append(question)
+        row["material_types"].add(material_type)
+        row["filenames"].add(filename)
+        if len(row["evidence"]) < 4:
+            row["evidence"].append(
+                {
+                    "source": "question",
+                    "label": f"{filename}{' #' + str(obj_value(question, 'problem_number')) if obj_value(question, 'problem_number') else ''}",
+                    "quote": clip_text(prompt, 300),
+                    "concept_id": None,
+                    "question_id": str(obj_value(question, "id")),
+                    "material_id": str(obj_value(question, "material_id")),
+                }
+            )
+
+    for weak_topic in weak_topics:
+        key = topic_merge_key(weak_topic)
+        if not key:
+            continue
+        row = grouped.setdefault(
+            key,
+            {
+                "topic_name": clip_text(weak_topic, 140),
+                "questions": [],
+                "material_types": set(),
+                "filenames": set(),
+                "evidence": [],
+            },
+        )
+        row["evidence"].append(
+            {
+                "source": "inference",
+                "label": "User-listed weak topic",
+                "quote": weak_topic,
+                "concept_id": None,
+            }
+        )
+
+    predictions: list[dict] = []
+    for key, row in grouped.items():
+        topic_name = row["topic_name"]
+        candidate = TopicCandidate(
+            topic_name=topic_name,
+            source="practice_question",
+            evidence_quote=(row["evidence"][0].get("quote") if row["evidence"] else None),
+            evidence_quotes=[e.get("quote") for e in row["evidence"] if e.get("quote")],
+        )
+        matched = match_candidate_to_concepts(candidate, concepts)
+        matched_concepts = [item["concept"] for item in matched]
+        question_count = len(row["questions"])
+        material_types = sorted(row["material_types"])
+        high_signal_material = bool({"past_exam", "past_homework", "practice_bank", "review_sheet"} & set(material_types))
+        freq_signal = min(1.0, question_count / 5.0)
+        weak_signal = 1.0 if key in weak_keys else 0.0
+        concept_signal = max((item["score"] for item in matched), default=0.0)
+        mastery_values = [mastery_map[c.id] for c in matched_concepts if c.id in mastery_map]
+        weakness = sum(1.0 - float(value) for value in mastery_values) / len(mastery_values) if mastery_values else None
+
+        exam_likelihood = clamp(
+            0.28
+            + 0.28 * freq_signal
+            + (0.18 if high_signal_material else 0.04)
+            + 0.16 * concept_signal
+            + 0.10 * weak_signal
+        )
+        student_priority = exam_likelihood
+        if weakness is not None:
+            student_priority = clamp(0.72 * exam_likelihood + 0.22 * weakness + 0.06 * weak_signal)
+        elif weak_signal:
+            student_priority = clamp(exam_likelihood + 0.1)
+
+        if question_count >= 3 and high_signal_material:
+            confidence = "high"
+        elif question_count >= 1 or matched:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+        missing_data = []
+        if question_count == 0:
+            missing_data.append("No located extracted questions were found for this topic.")
+        if not matched_concepts and concepts:
+            missing_data.append("No matching course concept was found in uploaded notes.")
+        if confidence == "low":
+            missing_data.append("Evidence is limited, so this is a cautious estimate.")
+
+        evidence = row["evidence"][:4] + evidence_from_matched_concepts(matched[:2], mastery_map)
+        predictions.append(
+            {
+                "topic_name": topic_name,
+                "matched_concept_ids": [str(c.id) for c in matched_concepts],
+                "exam_likelihood_score": round(exam_likelihood, 3),
+                "student_priority_score": round(student_priority, 3),
+                "confidence": confidence,
+                "evidence": evidence[:7],
+                "missing_data": missing_data,
+                "recommended_study_action": (
+                    f"Redo {min(question_count, 3)} located question{'s' if question_count != 1 else ''} and write the recognition clues."
+                    if question_count
+                    else "Review this weak topic and upload practice questions for stronger evidence."
+                ),
+                "scoring_json": {
+                    "question_count": question_count,
+                    "material_types": material_types,
+                    "weak_topic_signal": weak_signal,
+                    "material_signal": "high" if high_signal_material else "low",
+                    "recommended_question_ids": [str(obj_value(q, "id")) for q in row["questions"][:5]],
+                },
+            }
+        )
+
+    predictions.sort(
+        key=lambda item: (item["student_priority_score"], item["exam_likelihood_score"]),
+        reverse=True,
+    )
+
+    if not materials:
+        warnings.append("No exam prep materials were selected, so the plan relies on existing syllabus/course evidence.")
+    if materials and not questions:
+        warnings.append("No persisted extracted questions were available, so recommended questions could not be selected.")
+
+    return predictions[:30], warnings
+
+
+def merge_topic_prediction_sets(*sets: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    for predictions in sets:
+        for topic in predictions or []:
+            key = topic_merge_key(topic.get("topic_name"))
+            if not key:
+                continue
+            existing = next((item for item in merged if topic_merge_key(item.get("topic_name")) == key), None)
+            if not existing:
+                merged.append(dict(topic))
+                continue
+            existing["exam_likelihood_score"] = max(
+                float(existing.get("exam_likelihood_score") or 0),
+                float(topic.get("exam_likelihood_score") or 0),
+            )
+            existing["student_priority_score"] = max(
+                float(existing.get("student_priority_score") or 0),
+                float(topic.get("student_priority_score") or 0),
+            )
+            confidence_rank = {"low": 0, "medium": 1, "high": 2}
+            if confidence_rank.get(topic.get("confidence"), 0) > confidence_rank.get(existing.get("confidence"), 0):
+                existing["confidence"] = topic.get("confidence")
+            existing["evidence"] = (existing.get("evidence") or []) + [
+                e for e in (topic.get("evidence") or [])
+                if e not in (existing.get("evidence") or [])
+            ]
+            existing["evidence"] = existing["evidence"][:8]
+            existing["missing_data"] = list(dict.fromkeys((existing.get("missing_data") or []) + (topic.get("missing_data") or [])))
+            existing["scoring_json"] = {
+                **(existing.get("scoring_json") or {}),
+                **(topic.get("scoring_json") or {}),
+            }
+
+    merged.sort(
+        key=lambda item: (float(item.get("student_priority_score") or 0), float(item.get("exam_likelihood_score") or 0)),
+        reverse=True,
+    )
+    return merged[:30]
+
+
+def select_recommended_questions_for_topics(topics: list[dict], questions: list, total_limit: int = 24) -> list[dict]:
+    selected: list[dict] = []
+    used: set[str] = set()
+
+    for topic in topics:
+        topic_name = topic.get("topic_name") or ""
+        topic_key = topic_merge_key(topic_name)
+        candidates = []
+        for question in questions:
+            qid = str(obj_value(question, "id"))
+            if qid in used:
+                continue
+            qtopic = obj_value(question, "topic_name") or infer_topic_from_question_text(obj_value(question, "prompt_text", ""))
+            match = topics_should_merge(topic_name, qtopic) or topic_key == topic_merge_key(qtopic)
+            if match:
+                candidates.append(question)
+
+        candidates.sort(key=lambda q: float(obj_value(q, "confidence", 0) or 0), reverse=True)
+        for question in candidates[:3]:
+            qid = str(obj_value(question, "id"))
+            used.add(qid)
+            selected.append(
+                {
+                    "extracted_question_id": qid,
+                    "topic_prediction_id": topic.get("id"),
+                    "rank": len(selected) + 1,
+                    "why_selected": (
+                        f"Selected because it is a located uploaded question for {topic_name} "
+                        "and supports the evidence-based plan."
+                    ),
+                    "confidence": float(obj_value(question, "confidence", 0.45) or 0.45),
+                    "evidence_json": {
+                        "topic_name": topic_name,
+                        "question_topic": obj_value(question, "topic_name"),
+                        "source_ref": obj_value(question, "source_ref_json", {}) or {},
+                        "estimated_priority": topic.get("student_priority_score"),
+                    },
+                }
+            )
+            if len(selected) >= total_limit:
+                return selected
+
+    if len(selected) < total_limit:
+        leftovers = [q for q in questions if str(obj_value(q, "id")) not in used]
+        leftovers.sort(key=lambda q: float(obj_value(q, "confidence", 0) or 0), reverse=True)
+        for question in leftovers[: total_limit - len(selected)]:
+            qid = str(obj_value(question, "id"))
+            selected.append(
+                {
+                    "extracted_question_id": qid,
+                    "topic_prediction_id": None,
+                    "rank": len(selected) + 1,
+                    "why_selected": "Selected as a located uploaded practice question because few topic-matched questions were available.",
+                    "confidence": float(obj_value(question, "confidence", 0.35) or 0.35),
+                    "evidence_json": {
+                        "topic_name": obj_value(question, "topic_name"),
+                        "source_ref": obj_value(question, "source_ref_json", {}) or {},
+                        "missing_data": "No strong topic match was available.",
+                    },
+                }
+            )
+
+    return selected
+
+
+def build_plan_variants(plan_days: list[dict], topics: list[dict], recommended_count: int, warnings: list[str]) -> dict:
+    top_topics = [topic.get("topic_name") for topic in topics[:5] if topic.get("topic_name")]
+    minimum_tasks = [
+        f"Redo the highest-priority recommended questions for {name}."
+        for name in top_topics[:3]
+    ]
+    strong_tasks = [
+        f"Do a recognition pass, full solution, and mistake log for {name}."
+        for name in top_topics[:5]
+    ]
+
+    if recommended_count == 0:
+        minimum_tasks.append("Upload or extract located practice questions before relying on question recommendations.")
+
+    return {
+        "minimum_plan": {
+            "label": "Minimum evidence-based plan",
+            "tasks": minimum_tasks or ["Review the highest-confidence uploaded scope evidence."],
+            "note": "Focus on the smallest set of likely exam scope items based on uploaded materials.",
+        },
+        "strong_plan": {
+            "label": "Strong evidence-based plan",
+            "tasks": strong_tasks or ["Review all ranked topics, then complete a mixed practice block."],
+            "note": "Use this when there is enough time for redo practice, reflection, and mixed review.",
+        },
+        "warnings": warnings,
+        "recommended_question_count": recommended_count,
+        "day_count": len(plan_days),
+    }
