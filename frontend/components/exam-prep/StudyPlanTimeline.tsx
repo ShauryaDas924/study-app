@@ -30,8 +30,31 @@ export default function StudyPlanTimeline({ days }: { days: ExamPrepPlanDay[] })
                     {task.description ? (
                       <div className="text-xs text-slate-600">{task.description}</div>
                     ) : null}
+                    {task.learning_goal ? (
+                      <div className="mt-1 text-xs text-slate-500">Goal: {task.learning_goal}</div>
+                    ) : null}
                     {task.rationale ? (
                       <div className="mt-1 text-xs text-slate-500">{task.rationale}</div>
+                    ) : null}
+                    {task.assigned_questions?.length ? (
+                      <div className="mt-2 space-y-1">
+                        {task.assigned_questions.map((question) => {
+                          const source = question.source || {};
+                          const label = [
+                            source.filename,
+                            source.problem_number ? `Problem ${source.problem_number}` : null,
+                            source.page ? `Page ${source.page}` : null,
+                          ].filter(Boolean).join(" - ");
+                          return (
+                            <div key={question.recommended_question_id} className="text-xs text-slate-500">
+                              Question rank {question.rank ?? "?"}{label ? ` - ${label}` : ""}
+                            </div>
+                          );
+                        })}
+                        {task.question_assignment_reason ? (
+                          <div className="text-xs text-slate-500">{task.question_assignment_reason}</div>
+                        ) : null}
+                      </div>
                     ) : null}
                   </div>
                   <div className="shrink-0 text-xs text-slate-500">

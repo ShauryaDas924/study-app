@@ -20,7 +20,7 @@ export default function LockdownProgressPanel({ progress }: { progress?: ExamLoc
         <div className="h-full bg-emerald-300" style={{ width: `${pct}%` }} />
       </div>
       <div className="mt-2 text-xs text-slate-500">
-        {progress.completed_count} completed - {progress.attempted_count} attempts - {progress.recommended_count} recommended
+        {progress.completed_count} completed - {progress.attempted_count} attempts - {progress.skipped_count ?? 0} skipped - {progress.recommended_count} recommended
       </div>
       {progress.pitfalls.length ? (
         <div className="mt-3 flex flex-wrap gap-2">

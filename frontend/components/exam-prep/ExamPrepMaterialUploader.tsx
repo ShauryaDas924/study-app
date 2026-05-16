@@ -19,6 +19,14 @@ const materialTypes: { value: ExamPrepMaterialType; label: string }[] = [
   { value: "other", label: "Other" },
 ];
 
+const UPLOAD_CONCURRENCY = 2;
+
+type UploadResult = {
+  fileName: string;
+  material?: ExamPrepMaterial;
+  error?: string;
+};
+
 export default function ExamPrepMaterialUploader({
   classId,
   onUploaded,
@@ -30,20 +38,23 @@ export default function ExamPrepMaterialUploader({
   const [files, setFiles] = useState<File[]>([]);
   const [materialType, setMaterialType] = useState<ExamPrepMaterialType>("practice_bank");
   const [uploadStatus, setUploadStatus] = useState<Record<string, { status: string; message?: string }>>({});
+  const [uploadSummary, setUploadSummary] = useState<{ uploaded: number; total: number; failures: string[] } | null>(null);
 
   function fileKey(file: File) {
     return `${file.name}-${file.size}-${file.lastModified}`;
   }
 
-  const uploadM = useMutation({
-    mutationFn: async () => {
-      if (!files.length) throw new Error("Choose one or more files first.");
+  async function uploadWithConcurrency(batchFiles: File[]): Promise<UploadResult[]> {
+    const results: UploadResult[] = new Array(batchFiles.length);
+    let nextIndex = 0;
 
-      const uploaded: ExamPrepMaterial[] = [];
-      const failures: string[] = [];
-
-      for (const selectedFile of files) {
+    async function worker() {
+      while (nextIndex < batchFiles.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const selectedFile = batchFiles[index];
         const key = fileKey(selectedFile);
+
         setUploadStatus((current) => ({
           ...current,
           [key]: { status: "uploading" },
@@ -51,26 +62,53 @@ export default function ExamPrepMaterialUploader({
 
         try {
           const material = await api.uploadExamPrepMaterial(classId, materialType, selectedFile);
-          uploaded.push(material);
+          results[index] = { fileName: selectedFile.name, material };
           setUploadStatus((current) => ({
             ...current,
-            [key]: { status: "uploaded" },
+            [key]: {
+              status: material.extraction_status === "failed" ? "uploaded, text extraction failed" : "uploaded",
+              message: material.parse_error ?? undefined,
+            },
           }));
         } catch (error) {
-          failures.push(selectedFile.name);
+          const message = error instanceof Error ? error.message : "Upload failed";
+          results[index] = { fileName: selectedFile.name, error: message };
           setUploadStatus((current) => ({
             ...current,
-            [key]: { status: "failed", message: error instanceof Error ? error.message : "Upload failed" },
+            [key]: { status: "failed", message },
           }));
         }
       }
+    }
 
-      return { uploaded, failures };
+    await Promise.all(
+      Array.from({ length: Math.min(UPLOAD_CONCURRENCY, batchFiles.length) }, () => worker())
+    );
+
+    return results;
+  }
+
+  const uploadM = useMutation({
+    mutationFn: async () => {
+      if (!files.length) throw new Error("Choose one or more files first.");
+      const batchFiles = [...files];
+      setUploadSummary(null);
+
+      const results = await uploadWithConcurrency(batchFiles);
+      const uploaded = results
+        .map((result) => result.material)
+        .filter((material): material is ExamPrepMaterial => Boolean(material));
+      const failures = results
+        .filter((result) => result.error)
+        .map((result) => result.fileName);
+
+      return { uploaded, failures, total: batchFiles.length };
     },
-    onSuccess: async ({ uploaded }) => {
+    onSuccess: async ({ uploaded, failures, total }) => {
       uploaded.forEach((material) => onUploaded?.(material));
       await qc.invalidateQueries({ queryKey: ["exam-prep-materials", classId] });
-      if (uploaded.length === files.length) {
+      setUploadSummary({ uploaded: uploaded.length, failures, total });
+      if (uploaded.length === total) {
         setFiles([]);
       }
     },
@@ -105,6 +143,7 @@ export default function ExamPrepMaterialUploader({
             onChange={(e) => {
               setFiles(Array.from(e.target.files ?? []));
               setUploadStatus({});
+              setUploadSummary(null);
             }}
             className="block w-full text-sm text-slate-600"
           />
@@ -137,6 +176,16 @@ export default function ExamPrepMaterialUploader({
       ) : null}
 
       {uploadM.error ? <div className="text-sm text-pink-600">{String(uploadM.error)}</div> : null}
+      {uploadSummary ? (
+        <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          Uploaded {uploadSummary.uploaded}/{uploadSummary.total}
+          {uploadSummary.failures.length ? (
+            <div className="mt-1 text-pink-600">
+              Failed: {uploadSummary.failures.join(", ")}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div className="text-xs text-slate-500">
         Upload only material you want used as evidence. Question recommendations come from extracted uploaded materials.
       </div>

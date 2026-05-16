@@ -138,6 +138,7 @@ def question_dict(question: ExamPrepExtractedQuestion) -> dict:
         "topic_name": question.topic_name,
         "source_ref_json": question.source_ref_json or {},
         "confidence": float(question.confidence) if question.confidence is not None else None,
+        "status": getattr(question, "status", "active") or "active",
     }
 
 
@@ -235,7 +236,16 @@ async def get_progress(
             ExamPrepRecommendedQuestion.user_id == user_id,
             ExamPrepRecommendedQuestion.class_id == plan.class_id,
             ExamPrepRecommendedQuestion.plan_id == plan.id,
-            ExamPrepRecommendedQuestion.status.in_(["completed", "attempted"]),
+            ExamPrepRecommendedQuestion.status == "completed",
+        )
+    )).scalar_one()
+
+    skipped_count = (await db.execute(
+        select(func.count()).select_from(ExamPrepRecommendedQuestion).where(
+            ExamPrepRecommendedQuestion.user_id == user_id,
+            ExamPrepRecommendedQuestion.class_id == plan.class_id,
+            ExamPrepRecommendedQuestion.plan_id == plan.id,
+            ExamPrepRecommendedQuestion.status == "skipped",
         )
     )).scalar_one()
 
@@ -255,6 +265,7 @@ async def get_progress(
         "recommended_count": int(rec_count or 0),
         "attempted_count": int(attempted_count or 0),
         "completed_count": int(completed_count or 0),
+        "skipped_count": int(skipped_count or 0),
         "pitfalls": [{"category": row[0], "count": int(row[1])} for row in pitfall_rows],
     }
 

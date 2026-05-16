@@ -414,6 +414,7 @@ class ExamPrepExtractedQuestion(Base):
     source_ref_json = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     confidence = Column(Numeric, nullable=True)
     extraction_json = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    status = Column(Text, nullable=False, server_default=text("'active'"), index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

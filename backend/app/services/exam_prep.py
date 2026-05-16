@@ -1457,17 +1457,25 @@ def build_plan_days(
             elif task_type == "practice":
                 title = f"Practice: {topic_name}"
                 description = "Answer applied questions and explain why each method fits."
+                learning_goal = "Practice the pattern until you can recognize the setup from the wording."
             elif task_type == "mixed":
                 title = f"Review and practice: {topic_name}"
                 description = "Start with notes, then do a small practice block."
+                learning_goal = "Connect the concept review to a located uploaded question."
             else:
                 title = f"Review: {topic_name}"
                 description = topic.get("recommended_study_action") or "Review course evidence and summarize the key idea."
+                learning_goal = "Name the core idea, recognition clues, and most likely trap."
+            if task_type == "mock_exam":
+                learning_goal = "Practice switching between patterns under time pressure."
+            if topic.get("is_general_fallback"):
+                learning_goal = "Clarify what evidence is available before relying on the plan."
 
             tasks.append(
                 {
                     "title": title,
                     "description": description,
+                    "learning_goal": learning_goal,
                     "minutes": minutes,
                     "topic_name": topic_name,
                     "concept_id": concept_id,
@@ -1477,7 +1485,7 @@ def build_plan_days(
                         "No clear study topics were found yet."
                         if topic.get("is_general_fallback")
                         else f"Priority {round(topic.get('student_priority_score', 0) * 100)} based on "
-                        "syllabus evidence and available course concepts."
+                        "uploaded evidence, extracted questions, and available course signals."
                     ),
                     "is_general_fallback": bool(topic.get("is_general_fallback")),
                 }
@@ -1534,6 +1542,11 @@ def build_task_rows_from_plan(plan_json: dict) -> list[dict]:
                     "source_json": {
                         "topic_name": topic_name,
                         "task_type": task_type,
+                        "learning_goal": task.get("learning_goal"),
+                        "recommended_question_ids": task.get("recommended_question_ids") or [],
+                        "recommended_extracted_question_ids": task.get("recommended_extracted_question_ids") or [],
+                        "assigned_questions": task.get("assigned_questions") or [],
+                        "question_assignment_reason": task.get("question_assignment_reason"),
                     },
                 }
             )
@@ -1562,9 +1575,19 @@ def normalize_material_type(value: str | None) -> str:
     return normalized if normalized in VALID_MATERIAL_TYPES else "other"
 
 
-async def extract_exam_prep_material_text(filename: str, file_bytes: bytes) -> tuple[str, dict, list[str]]:
+async def extract_exam_prep_material_text(
+    filename: str,
+    file_bytes: bytes,
+    *,
+    allow_vision_ocr: bool = True,
+) -> tuple[str, dict, list[str]]:
     warnings: list[str] = []
-    extracted = await extract_text_with_source(filename, file_bytes, math_mode=True)
+    extracted = await extract_text_with_source(
+        filename,
+        file_bytes,
+        math_mode=True,
+        allow_vision_ocr=allow_vision_ocr,
+    )
     raw_text = str(extracted.get("text") or "").replace("\r\n", "\n").replace("\r", "\n").replace("\u0000", "")
     raw_text = re.sub(r"[ \t]+", " ", raw_text)
     raw_text = re.sub(r"\n{4,}", "\n\n\n", raw_text).strip()
@@ -1573,10 +1596,14 @@ async def extract_exam_prep_material_text(filename: str, file_bytes: bytes) -> t
         raise ValueError("No text could be extracted from this file.")
 
     if len(raw_text) < 120:
-        warnings.append("The extracted material text is short, so question extraction confidence may be low.")
+        warnings.append("Fast text extraction produced limited text. Question extraction may miss questions without OCR.")
+
+    source_ref = extracted.get("source_ref") or {"filename": filename}
+    if source_ref.get("ocr_skipped_pages"):
+        warnings.append("Vision OCR was skipped during upload for speed. Some PDF pages may have limited extracted text.")
 
     metadata = {
-        "source_ref": extracted.get("source_ref") or {"filename": filename},
+        "source_ref": source_ref,
         "pages": [
             {
                 "page": page.get("page"),
@@ -1747,6 +1774,135 @@ def obj_value(obj, name: str, default=None):
     return getattr(obj, name, default)
 
 
+def extract_score_values(value) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return [number] if 0 <= number <= 100 else []
+    if isinstance(value, dict):
+        values: list[float] = []
+        for nested in value.values():
+            values.extend(extract_score_values(nested))
+        return values
+    if isinstance(value, (list, tuple)):
+        values: list[float] = []
+        for nested in value:
+            values.extend(extract_score_values(nested))
+        return values
+    if isinstance(value, str):
+        return [
+            float(match)
+            for match in re.findall(r"\b(?:100|[1-9]?\d)(?:\.\d+)?\b", value)
+            if 0 <= float(match) <= 100
+        ]
+    return []
+
+
+def target_score_from_grade(target_grade: str | None) -> float | None:
+    if not target_grade:
+        return None
+    grade = target_grade.strip().upper()
+    if grade.startswith("A"):
+        return 90.0
+    if grade.startswith("B"):
+        return 80.0
+    if grade.startswith("C"):
+        return 70.0
+    if grade.startswith("D"):
+        return 60.0
+    return None
+
+
+def build_planning_goal_context(
+    *,
+    target_score: float | None,
+    target_grade: str | None,
+    current_scores: dict | None,
+    exam_date: datetime,
+    minutes_per_day: int,
+    requested_intensity: str,
+) -> dict:
+    now = datetime.now(timezone.utc)
+    days_remaining = max(1, (exam_date.astimezone(timezone.utc).date() - now.date()).days)
+    inferred_target = target_score if target_score is not None else target_score_from_grade(target_grade)
+    current_values = extract_score_values(current_scores or {})
+    current_average = round(sum(current_values) / len(current_values), 1) if current_values else None
+    target_gap = round(float(inferred_target) - current_average, 1) if inferred_target is not None and current_average is not None else None
+
+    high_target_signal = 1.0 if inferred_target and inferred_target >= 90 else 0.55 if inferred_target and inferred_target >= 80 else 0.0
+    low_current_signal = 1.0 if current_average is not None and current_average < 75 else 0.45 if current_average is not None and current_average < 85 else 0.0
+    gap_signal = clamp((target_gap or 0) / 25.0)
+    time_pressure_signal = 1.0 if days_remaining <= 3 else 0.7 if days_remaining <= 7 else 0.35 if days_remaining <= 14 else 0.0
+
+    effective_intensity = requested_intensity if requested_intensity in VALID_INTENSITIES else "balanced"
+    if minutes_per_day < 25:
+        effective_intensity = "light"
+    elif requested_intensity != "light" and (time_pressure_signal >= 0.7 or gap_signal >= 0.45 or high_target_signal >= 1.0):
+        effective_intensity = "aggressive"
+
+    if effective_intensity == "aggressive":
+        plan_intensity = "compressed high-priority practice"
+    elif effective_intensity == "light":
+        plan_intensity = "minimum viable review"
+    else:
+        plan_intensity = "balanced evidence-based review"
+
+    scoring_explanation = [
+        "Topic priority is estimated from extracted-question frequency, material type, user-listed weak topics, mastery, pitfalls, target gap, and time pressure.",
+        "Question recommendations are limited to persisted questions extracted from uploaded materials.",
+    ]
+    if inferred_target is not None:
+        scoring_explanation.append(f"Target goal signal is based on an estimated target score of {round(float(inferred_target), 1)}.")
+    if current_average is not None:
+        scoring_explanation.append(f"Current score signal is based on an estimated current average of {current_average}.")
+    if days_remaining <= 7:
+        scoring_explanation.append("The exam date creates time pressure, so the plan emphasizes the highest-priority topics first.")
+
+    missing_data_warnings = []
+    if inferred_target is None:
+        missing_data_warnings.append("No numeric target score or recognizable target grade was provided.")
+    if current_average is None:
+        missing_data_warnings.append("No numeric current score evidence was found, so target gap is estimated with limited data.")
+
+    return {
+        "target_score_estimate": inferred_target,
+        "current_score_estimate": current_average,
+        "target_gap": target_gap,
+        "days_remaining": days_remaining,
+        "target_gap_boost": clamp(0.55 * gap_signal + 0.25 * high_target_signal + 0.20 * low_current_signal),
+        "time_pressure_boost": time_pressure_signal,
+        "plan_intensity": plan_intensity,
+        "effective_intensity": effective_intensity,
+        "scoring_explanation": scoring_explanation,
+        "target_gap_summary": {
+            "target_score_estimate": inferred_target,
+            "target_grade": target_grade,
+            "current_score_estimate": current_average,
+            "estimated_gap": target_gap,
+            "confidence": "medium" if inferred_target is not None and current_average is not None else "low",
+        },
+        "why_topics_ranked_this_way": (
+            "Topics with more extracted questions, stronger material evidence, user-listed weakness, lower mastery, "
+            "related pitfalls, and tighter time pressure receive higher estimated priority."
+        ),
+        "missing_data_warnings": missing_data_warnings,
+    }
+
+
+def term_matches_topic(topic_name: str | None, terms: list[str]) -> bool:
+    topic_key = topic_merge_key(topic_name)
+    if not topic_key:
+        return False
+    for term in terms:
+        term_key = topic_merge_key(term)
+        if term_key and (term_key in topic_key or topic_key in term_key or topics_should_merge(topic_key, term_key)):
+            return True
+    return False
+
+
 def evidence_from_matched_concepts(matched: list[dict], mastery_map: dict[UUID, float]) -> list[dict]:
     evidence = []
     for item in matched:
@@ -1778,11 +1934,17 @@ def build_material_topic_predictions(
     concepts: list,
     mastery_map: dict[UUID, float],
     weak_topics: list[str] | None = None,
+    pitfall_terms: list[str] | None = None,
+    planning_context: dict | None = None,
 ) -> tuple[list[dict], list[str]]:
     warnings: list[str] = []
     material_map = {str(obj_value(material, "id")): material for material in materials}
     weak_topics = [str(topic).strip() for topic in (weak_topics or []) if str(topic).strip()]
     weak_keys = {topic_merge_key(topic) for topic in weak_topics}
+    pitfall_terms = [str(term).strip() for term in (pitfall_terms or []) if str(term).strip()]
+    planning_context = planning_context or {}
+    target_gap_boost = float(planning_context.get("target_gap_boost") or 0)
+    time_pressure_boost = float(planning_context.get("time_pressure_boost") or 0)
 
     grouped: dict[str, dict] = {}
     for question in questions:
@@ -1858,6 +2020,7 @@ def build_material_topic_predictions(
         high_signal_material = bool({"past_exam", "past_homework", "practice_bank", "review_sheet"} & set(material_types))
         freq_signal = min(1.0, question_count / 5.0)
         weak_signal = 1.0 if key in weak_keys else 0.0
+        pitfall_signal = 1.0 if term_matches_topic(topic_name, pitfall_terms) else 0.0
         concept_signal = max((item["score"] for item in matched), default=0.0)
         mastery_values = [mastery_map[c.id] for c in matched_concepts if c.id in mastery_map]
         weakness = sum(1.0 - float(value) for value in mastery_values) / len(mastery_values) if mastery_values else None
@@ -1869,11 +2032,26 @@ def build_material_topic_predictions(
             + 0.16 * concept_signal
             + 0.10 * weak_signal
         )
-        student_priority = exam_likelihood
+        student_priority = clamp(
+            0.72 * exam_likelihood
+            + 0.10 * weak_signal
+            + 0.08 * pitfall_signal
+            + 0.06 * target_gap_boost
+            + 0.04 * time_pressure_boost
+        )
         if weakness is not None:
-            student_priority = clamp(0.72 * exam_likelihood + 0.22 * weakness + 0.06 * weak_signal)
+            student_priority = clamp(
+                0.62 * exam_likelihood
+                + 0.18 * weakness
+                + 0.08 * weak_signal
+                + 0.06 * pitfall_signal
+                + 0.04 * target_gap_boost
+                + 0.02 * time_pressure_boost
+            )
         elif weak_signal:
-            student_priority = clamp(exam_likelihood + 0.1)
+            student_priority = clamp(student_priority + 0.1)
+        if pitfall_signal:
+            student_priority = clamp(student_priority + 0.06)
 
         if question_count >= 3 and high_signal_material:
             confidence = "high"
@@ -1891,6 +2069,15 @@ def build_material_topic_predictions(
             missing_data.append("Evidence is limited, so this is a cautious estimate.")
 
         evidence = row["evidence"][:4] + evidence_from_matched_concepts(matched[:2], mastery_map)
+        if pitfall_signal:
+            evidence.append(
+                {
+                    "source": "pitfall",
+                    "label": "Past mistake memory",
+                    "quote": "A related stored pitfall matched this topic.",
+                    "concept_id": None,
+                }
+            )
         predictions.append(
             {
                 "topic_name": topic_name,
@@ -1909,6 +2096,9 @@ def build_material_topic_predictions(
                     "question_count": question_count,
                     "material_types": material_types,
                     "weak_topic_signal": weak_signal,
+                    "pitfall_signal": pitfall_signal,
+                    "target_gap_boost": round(target_gap_boost, 3),
+                    "time_pressure_boost": round(time_pressure_boost, 3),
                     "material_signal": "high" if high_signal_material else "low",
                     "recommended_question_ids": [str(obj_value(q, "id")) for q in row["questions"][:5]],
                 },
@@ -2031,6 +2221,87 @@ def select_recommended_questions_for_topics(topics: list[dict], questions: list,
             )
 
     return selected
+
+
+def assign_recommended_questions_to_plan_days(
+    plan_days: list[dict],
+    recommendations: list[dict],
+    questions: list,
+    materials: list,
+) -> list[dict]:
+    if not plan_days or not recommendations:
+        return plan_days
+
+    question_map = {str(obj_value(question, "id")): question for question in questions}
+    material_map = {str(obj_value(material, "id")): material for material in materials}
+    details: list[dict] = []
+    for rec in recommendations:
+        extracted_id = str(rec.get("extracted_question_id") or "")
+        question = question_map.get(extracted_id)
+        if not question:
+            continue
+        material = material_map.get(str(obj_value(question, "material_id")))
+        source_ref = obj_value(question, "source_ref_json", {}) or {}
+        details.append(
+            {
+                "recommended_question_id": str(rec.get("recommended_question_id") or rec.get("id") or extracted_id),
+                "extracted_question_id": extracted_id,
+                "topic_name": rec.get("evidence_json", {}).get("topic_name") or obj_value(question, "topic_name"),
+                "rank": rec.get("rank"),
+                "why_selected": rec.get("why_selected"),
+                "confidence": rec.get("confidence"),
+                "source": {
+                    "filename": obj_value(material, "filename") if material else None,
+                    "material_type": obj_value(material, "material_type") if material else None,
+                    "problem_number": obj_value(question, "problem_number") or source_ref.get("problem_number"),
+                    "page": source_ref.get("page"),
+                    "topic_name": obj_value(question, "topic_name"),
+                },
+            }
+        )
+
+    used: set[str] = set()
+    for day in plan_days:
+        for task in day.get("tasks") or []:
+            topic_name = task.get("topic_name")
+            task_type = task.get("task_type")
+            limit = 2 if task_type in {"practice", "mixed", "mock_exam"} else 1
+            matches = [
+                detail
+                for detail in details
+                if detail["recommended_question_id"] not in used
+                and topics_should_merge(topic_name, detail.get("topic_name"))
+            ]
+            if not matches and task_type in {"practice", "mixed", "mock_exam"}:
+                matches = [detail for detail in details if detail["recommended_question_id"] not in used]
+
+            assigned = matches[:limit]
+            if not assigned:
+                task.setdefault("recommended_question_ids", [])
+                task.setdefault("assigned_questions", [])
+                continue
+
+            for detail in assigned:
+                used.add(detail["recommended_question_id"])
+
+            task["recommended_question_ids"] = [detail["recommended_question_id"] for detail in assigned]
+            task["recommended_extracted_question_ids"] = [detail["extracted_question_id"] for detail in assigned]
+            task["assigned_questions"] = [
+                {
+                    "recommended_question_id": detail["recommended_question_id"],
+                    "extracted_question_id": detail["extracted_question_id"],
+                    "rank": detail.get("rank"),
+                    "source": detail.get("source") or {},
+                    "why_selected": detail.get("why_selected"),
+                    "confidence": detail.get("confidence"),
+                }
+                for detail in assigned
+            ]
+            task["question_assignment_reason"] = (
+                "Assigned because this block matches a high-priority topic and uses located questions from uploaded materials."
+            )
+
+    return plan_days
 
 
 def build_plan_variants(plan_days: list[dict], topics: list[dict], recommended_count: int, warnings: list[str]) -> dict:

@@ -106,19 +106,23 @@ def extract_from_plain_text(file_bytes: bytes) -> str:
 # ------------------------
 # MAIN ROUTER FUNCTION
 # ------------------------
-async def extract_text(filename: str, file_bytes: bytes, math_mode: bool = False) -> str:
+async def extract_text(
+    filename: str,
+    file_bytes: bytes,
+    math_mode: bool = False,
+    allow_vision_ocr: bool = True,
+) -> str:
     print("MATH MODE:", math_mode)
     filename = filename.lower()
 
     if filename.endswith((".png", ".jpg", ".jpeg")):
-        if USE_VISION:
+        if USE_VISION and allow_vision_ocr:
             return await extract_from_image(file_bytes)
-        else:
-            return "Vision disabled"
+        return "Unsupported file type"
 
     if filename.endswith(".pdf"):
 
-        if math_mode:
+        if math_mode and allow_vision_ocr:
             return await extract_from_pdf_math(file_bytes)
 
         return extract_from_pdf(file_bytes)
@@ -132,7 +136,12 @@ async def extract_text(filename: str, file_bytes: bytes, math_mode: bool = False
     return "Unsupported file type"
 
 
-async def extract_text_with_source(filename: str, file_bytes: bytes, math_mode: bool = False) -> dict:
+async def extract_text_with_source(
+    filename: str,
+    file_bytes: bytes,
+    math_mode: bool = False,
+    allow_vision_ocr: bool = True,
+) -> dict:
     """
     Extract text while keeping lightweight source metadata for exam-prep evidence.
     Existing callers should keep using extract_text; this helper is additive.
@@ -144,13 +153,17 @@ async def extract_text_with_source(filename: str, file_bytes: bytes, math_mode: 
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         pages = []
         full_text_parts = []
+        ocr_skipped_pages = []
 
         for index, page in enumerate(doc, start=1):
             page_text = page.get_text()
 
-            if math_mode and (len(page_text or "") < 200 or "  " in (page_text or "")):
+            needs_ocr = math_mode and (len(page_text or "") < 200 or "  " in (page_text or ""))
+            if needs_ocr and allow_vision_ocr:
                 pix = page.get_pixmap(dpi=300)
                 page_text = await extract_from_image(pix.tobytes("png"))
+            elif needs_ocr:
+                ocr_skipped_pages.append(index)
 
             page_text = str(page_text or "").strip()
             if page_text:
@@ -170,16 +183,24 @@ async def extract_text_with_source(filename: str, file_bytes: bytes, math_mode: 
                 "filename": original_filename,
                 "page_count": len(doc),
                 "extraction_mode": "pdf_pages",
+                "vision_ocr_allowed": allow_vision_ocr,
+                "ocr_skipped_pages": ocr_skipped_pages,
             },
         }
 
-    text = await extract_text(original_filename, file_bytes, math_mode=math_mode)
+    text = await extract_text(
+        original_filename,
+        file_bytes,
+        math_mode=math_mode,
+        allow_vision_ocr=allow_vision_ocr,
+    )
     return {
         "text": text,
         "pages": [],
         "source_ref": {
             "filename": original_filename,
             "extraction_mode": "single_text_block",
+            "vision_ocr_allowed": allow_vision_ocr,
         },
     }
 

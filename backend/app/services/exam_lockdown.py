@@ -96,6 +96,7 @@ async def build_exam_lockdown_tutor_response(
             "material_type": material_context.get("material_type"),
             "problem_number": question.get("problem_number") or source_ref.get("problem_number"),
             "page": source_ref.get("page"),
+            "question_status": question.get("status"),
             "source_ref": source_ref,
         },
         "question": {

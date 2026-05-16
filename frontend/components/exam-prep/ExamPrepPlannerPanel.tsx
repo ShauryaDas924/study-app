@@ -43,6 +43,16 @@ function Warnings({ warnings }: { warnings: string[] }) {
   );
 }
 
+function errorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  try {
+    const parsed = JSON.parse(message);
+    return parsed?.detail || message;
+  } catch {
+    return message;
+  }
+}
+
 export default function ExamPrepPlannerPanel() {
   const classId = useStore((s) => s.selectedClassId);
   const qc = useQueryClient();
@@ -130,7 +140,9 @@ export default function ExamPrepPlannerPanel() {
       setGenerated(data);
       setActivePlanId(data.exam_prep_plan_id);
       await qc.invalidateQueries({ queryKey: ["exam-prep-plans", classId] });
+      await qc.invalidateQueries({ queryKey: ["exam-prep-plans", classId, "active"] });
       await qc.invalidateQueries({ queryKey: ["exam-prep-plan", data.exam_prep_plan_id] });
+      await qc.invalidateQueries({ queryKey: ["exam-prep-plan-questions", data.exam_prep_plan_id] });
       await qc.invalidateQueries({ queryKey: ["exam-prep-materials", classId] });
     },
   });
@@ -155,6 +167,9 @@ export default function ExamPrepPlannerPanel() {
   const displayedRecommendations = planQ.data?.recommended_questions ?? generated?.recommended_questions ?? [];
   const displayedMinimumPlan = planQ.data?.minimum_plan ?? generated?.minimum_plan;
   const displayedStrongPlan = planQ.data?.strong_plan ?? generated?.strong_plan;
+  const displayedScoringExplanation = planQ.data?.scoring_explanation ?? generated?.scoring_explanation ?? [];
+  const displayedPlanIntensity = planQ.data?.plan_intensity ?? generated?.plan_intensity;
+  const failedMaterials = (materialsQ.data ?? []).filter((material) => material.extraction_status === "failed");
 
   if (!classId) {
     return (
@@ -253,7 +268,7 @@ export default function ExamPrepPlannerPanel() {
 
           {generateM.error ? (
             <div className="rounded-xl border border-pink-100 bg-pink-50 p-3 text-sm text-pink-700">
-              {String(generateM.error)}
+              {errorMessage(generateM.error)}
             </div>
           ) : null}
 
@@ -264,6 +279,16 @@ export default function ExamPrepPlannerPanel() {
               <div className="mt-1 text-xs">
                 Plans are estimated from your uploaded evidence. Question recommendations require extracted questions.
               </div>
+            </div>
+          ) : null}
+          {failedMaterials.length ? (
+            <div className="rounded-xl border border-pink-100 bg-pink-50 p-3 text-sm text-pink-700">
+              {failedMaterials.length} material{failedMaterials.length === 1 ? "" : "s"} had extraction issues. Re-upload or use clearer PDF/TXT materials before generating.
+            </div>
+          ) : null}
+          {activePlanId && !planQ.isLoading && !displayedRecommendations.length ? (
+            <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-sm text-amber-800">
+              This plan has 0 recommended questions. Extract questions from selected materials, then regenerate the plan.
             </div>
           ) : null}
         </div>
@@ -330,6 +355,20 @@ export default function ExamPrepPlannerPanel() {
             </div>
           </div>
           <StudyPlanTimeline days={displayedDays} />
+        </div>
+      ) : null}
+
+      {(displayedPlanIntensity || displayedScoringExplanation.length) ? (
+        <div className="rounded-xl border border-slate-100 p-4">
+          <div className="text-sm font-semibold text-slate-900">Plan scoring</div>
+          {displayedPlanIntensity ? <div className="mt-1 text-sm text-slate-600">{displayedPlanIntensity}</div> : null}
+          {displayedScoringExplanation.length ? (
+            <div className="mt-2 space-y-1">
+              {displayedScoringExplanation.map((item) => (
+                <div key={item} className="text-xs text-slate-500">{item}</div>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
 

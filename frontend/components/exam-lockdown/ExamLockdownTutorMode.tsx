@@ -31,6 +31,7 @@ function sourceLine(rec?: ExamPrepRecommendedQuestion | null) {
     q?.problem_number ? `Problem ${q.problem_number}` : null,
     typeof ref.page === "number" || typeof ref.page === "string" ? `Page ${ref.page}` : null,
     q?.topic_name,
+    q?.status === "stale" ? "stale source" : null,
   ].filter(Boolean).join(" - ");
 }
 
@@ -50,11 +51,21 @@ export default function ExamLockdownTutorMode() {
     enabled: Boolean(classId),
   });
 
-  const effectivePlanId = plansQ.data?.[0]?.id ?? null;
+  const newestActivePlan = useMemo(
+    () => [...(plansQ.data ?? [])].sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())[0],
+    [plansQ.data]
+  );
+  const effectivePlanId = newestActivePlan?.id ?? null;
 
   const planQ = useQuery({
     queryKey: ["exam-prep-plan", effectivePlanId],
     queryFn: () => api.getExamPrepPlan(effectivePlanId as UUID),
+    enabled: Boolean(effectivePlanId),
+  });
+
+  const planQuestionsQ = useQuery({
+    queryKey: ["exam-prep-plan-questions", effectivePlanId],
+    queryFn: () => api.getExamPrepPlanQuestions(effectivePlanId as UUID),
     enabled: Boolean(effectivePlanId),
   });
 
@@ -76,7 +87,11 @@ export default function ExamLockdownTutorMode() {
   }, [planQ.data, session?.plan_id, sessionM]);
 
   const plan = planQ.data;
-  const recommendations = useMemo(() => plan?.recommended_questions ?? [], [plan?.recommended_questions]);
+  const recommendations = useMemo(() => {
+    const direct = planQuestionsQ.data ?? [];
+    if (direct.length) return direct;
+    return plan?.recommended_questions ?? [];
+  }, [plan?.recommended_questions, planQuestionsQ.data]);
   const selectedRec = useMemo(
     () => recommendations.find((rec) => rec.id === selectedRecId) ?? recommendations[0],
     [recommendations, selectedRecId]
@@ -115,11 +130,12 @@ export default function ExamLockdownTutorMode() {
         status,
       });
     },
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["exam-lockdown-progress", effectivePlanId] });
-      await qc.invalidateQueries({ queryKey: ["exam-prep-plan", effectivePlanId] });
-    },
-  });
+	    onSuccess: async () => {
+	      await qc.invalidateQueries({ queryKey: ["exam-lockdown-progress", effectivePlanId] });
+	      await qc.invalidateQueries({ queryKey: ["exam-prep-plan", effectivePlanId] });
+	      await qc.invalidateQueries({ queryKey: ["exam-prep-plan-questions", effectivePlanId] });
+	    },
+	  });
 
   if (!classId) {
     return <div className="text-sm text-slate-500">Select a course first.</div>;
@@ -162,6 +178,24 @@ export default function ExamLockdownTutorMode() {
                 <span className="font-medium">{task.title}</span>
                 <span className="text-slate-500"> - {task.minutes} min</span>
                 {task.description ? <div className="text-xs text-slate-500">{task.description}</div> : null}
+                {task.learning_goal ? <div className="text-xs text-slate-500">Goal: {task.learning_goal}</div> : null}
+                {task.assigned_questions?.length ? (
+                  <div className="mt-1 space-y-1">
+                    {task.assigned_questions.map((question) => {
+                      const source = question.source || {};
+                      const label = [
+                        source.filename,
+                        source.problem_number ? `Problem ${source.problem_number}` : null,
+                        source.page ? `Page ${source.page}` : null,
+                      ].filter(Boolean).join(" - ");
+                      return (
+                        <div key={question.recommended_question_id} className="text-xs text-slate-500">
+                          Assigned question rank {question.rank ?? "?"}{label ? ` - ${label}` : ""}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -202,9 +236,12 @@ export default function ExamLockdownTutorMode() {
                   <div className="font-medium">Rank {rec.rank}</div>
                   <div className="line-clamp-2 text-xs opacity-75">{sourceLine(rec) || rec.question?.prompt_text}</div>
                 </button>
-              )) : (
-                <div className="text-sm text-slate-500">No recommended questions were saved with this plan.</div>
-              )}
+	              )) : (
+	                <div className="text-sm text-slate-500">
+	                  No recommended questions are linked to this plan. Go to Planner, extract questions from selected materials, then regenerate the plan.
+	                  <div className="mt-1 text-xs">0 recommendations found for this plan.</div>
+	                </div>
+	              )}
             </div>
           </div>
         </div>

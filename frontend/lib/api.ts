@@ -403,6 +403,7 @@ export interface ExamPrepExtractedQuestion {
   source_ref_json: Record<string, unknown>;
   confidence?: number | null;
   extraction_json?: Record<string, unknown>;
+  status?: "active" | "stale" | string;
   created_at?: string | null;
   material?: ExamPrepMaterial | null;
 }
@@ -450,6 +451,24 @@ export interface ExamPrepPlanTask {
   topic_name?: string;
   status?: ExamPrepTaskStatus;
   source_json?: Record<string, unknown>;
+  learning_goal?: string;
+  recommended_question_ids?: UUID[];
+  recommended_extracted_question_ids?: UUID[];
+  assigned_questions?: {
+    recommended_question_id: UUID;
+    extracted_question_id: UUID;
+    rank?: number;
+    why_selected?: string | null;
+    confidence?: number | null;
+    source?: {
+      filename?: string | null;
+      material_type?: string | null;
+      problem_number?: string | null;
+      page?: number | string | null;
+      topic_name?: string | null;
+    };
+  }[];
+  question_assignment_reason?: string;
 }
 
 export interface ExamPrepPlanDay {
@@ -474,6 +493,7 @@ export interface GenerateExamPrepPlanRequest {
   weak_topics?: string[];
   selected_material_ids?: UUID[];
   active?: boolean;
+  allow_no_recommendations?: boolean;
 }
 
 export interface GenerateExamPrepPlanResponse {
@@ -484,6 +504,12 @@ export interface GenerateExamPrepPlanResponse {
   strong_plan?: ExamPrepPlanVariant | null;
   recommended_questions?: ExamPrepRecommendedQuestion[];
   warnings: string[];
+  scoring_explanation?: string[];
+  target_gap_summary?: Record<string, unknown>;
+  plan_intensity?: string | null;
+  why_topics_ranked_this_way?: string | null;
+  missing_data_warnings?: string[];
+  diagnostics?: Record<string, unknown>;
 }
 
 export interface ExamPrepPlanSummary {
@@ -522,6 +548,12 @@ export interface ExamPrepPlan extends ExamPrepPlanSummary {
   strong_plan?: ExamPrepPlanVariant | null;
   tasks: ExamPrepPlanTask[];
   recommended_questions?: ExamPrepRecommendedQuestion[];
+  scoring_explanation?: string[];
+  target_gap_summary?: Record<string, unknown>;
+  plan_intensity?: string | null;
+  why_topics_ranked_this_way?: string | null;
+  missing_data_warnings?: string[];
+  diagnostics?: Record<string, unknown>;
 }
 
 export interface CreateExamPrepTasksOut {
@@ -554,6 +586,7 @@ export interface ExamLockdownProgress {
   recommended_count: number;
   attempted_count: number;
   completed_count: number;
+  skipped_count?: number;
   pitfalls: { category: string; count: number }[];
 }
 

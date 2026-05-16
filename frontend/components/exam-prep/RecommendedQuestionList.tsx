@@ -11,6 +11,7 @@ function sourceLine(rec: ExamPrepRecommendedQuestion) {
     q?.problem_number ? `Problem ${q.problem_number}` : null,
     typeof ref.page === "number" || typeof ref.page === "string" ? `Page ${ref.page}` : null,
     q?.topic_name,
+    q?.status === "stale" ? "stale source" : null,
   ].filter(Boolean);
   return pieces.join(" - ");
 }
