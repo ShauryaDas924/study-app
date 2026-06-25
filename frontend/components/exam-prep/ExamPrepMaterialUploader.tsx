@@ -115,9 +115,15 @@ export default function ExamPrepMaterialUploader({
   });
 
   return (
-    <div className="space-y-3 rounded-xl border border-slate-100 p-3">
-      <div className="text-sm font-medium text-slate-900">Exam Lockdown materials</div>
-      <div className="grid gap-3 md:grid-cols-[180px_1fr_auto] md:items-end">
+    <div className="space-y-4 rounded-xl border border-slate-100 bg-white/80 p-4 shadow-sm">
+      <div>
+        <div className="text-sm font-semibold text-slate-900">Upload evidence</div>
+        <div className="mt-1 text-xs text-slate-500">
+          Add only material you want used as evidence. Question recommendations come from extracted uploaded materials.
+        </div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-[200px_1fr_auto] lg:items-end">
         <div>
           <div className="mb-1 text-xs text-slate-500">Material type</div>
           <Select
@@ -145,18 +151,18 @@ export default function ExamPrepMaterialUploader({
               setUploadStatus({});
               setUploadSummary(null);
             }}
-            className="block w-full text-sm text-slate-600"
+            className="block w-full rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 file:mr-3 file:rounded-full file:border-0 file:bg-white file:px-3 file:py-1 file:text-xs file:font-medium file:text-slate-600"
           />
         </div>
 
-        <Button onClick={() => uploadM.mutate()} disabled={!files.length || uploadM.isPending}>
+        <Button onClick={() => uploadM.mutate()} disabled={!files.length || uploadM.isPending} className="whitespace-nowrap">
           {uploadM.isPending ? "Uploading..." : `Upload ${files.length || ""}`.trim()}
         </Button>
       </div>
 
       {files.length ? (
-        <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
-          {files.length} file{files.length === 1 ? "" : "s"} selected
+        <div className="rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          <div className="font-medium text-slate-700">{files.length} file{files.length === 1 ? "" : "s"} selected</div>
           <div className="mt-1 space-y-1">
             {files.map((selectedFile) => {
               const status = uploadStatus[fileKey(selectedFile)];
@@ -177,7 +183,7 @@ export default function ExamPrepMaterialUploader({
 
       {uploadM.error ? <div className="text-sm text-pink-600">{String(uploadM.error)}</div> : null}
       {uploadSummary ? (
-        <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+        <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
           Uploaded {uploadSummary.uploaded}/{uploadSummary.total}
           {uploadSummary.failures.length ? (
             <div className="mt-1 text-pink-600">
@@ -186,9 +192,6 @@ export default function ExamPrepMaterialUploader({
           ) : null}
         </div>
       ) : null}
-      <div className="text-xs text-slate-500">
-        Upload only material you want used as evidence. Question recommendations come from extracted uploaded materials.
-      </div>
     </div>
   );
 }
