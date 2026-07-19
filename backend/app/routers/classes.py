@@ -33,6 +33,12 @@ from app.models import (
     ExamInsight,
     ExamSession,
     ExamPrepPlan,
+    ExamPrepMaterial,
+    ExamPrepExtractedQuestion,
+    ExamPrepRecommendedQuestion,
+    ExamLockdownSession,
+    ExamLockdownAttempt,
+    ExamLockdownPitfall,
     ExamPrepSyllabus,
     ExamPrepTask,
     ExamPrepTopicPrediction,
@@ -202,6 +208,30 @@ async def clear_class_data(
     # 7.9 Delete Exam Prep Planner data
     # -----------------------------
     await db.execute(
+        delete(ExamLockdownPitfall).where(
+            ExamLockdownPitfall.user_id == user_id,
+            ExamLockdownPitfall.class_id == class_id
+        )
+    )
+    await db.execute(
+        delete(ExamLockdownAttempt).where(
+            ExamLockdownAttempt.user_id == user_id,
+            ExamLockdownAttempt.class_id == class_id
+        )
+    )
+    await db.execute(
+        delete(ExamLockdownSession).where(
+            ExamLockdownSession.user_id == user_id,
+            ExamLockdownSession.class_id == class_id
+        )
+    )
+    await db.execute(
+        delete(ExamPrepRecommendedQuestion).where(
+            ExamPrepRecommendedQuestion.user_id == user_id,
+            ExamPrepRecommendedQuestion.class_id == class_id
+        )
+    )
+    await db.execute(
         delete(ExamPrepTask).where(
             ExamPrepTask.user_id == user_id,
             ExamPrepTask.class_id == class_id
@@ -223,6 +253,18 @@ async def clear_class_data(
         delete(ExamPrepSyllabus).where(
             ExamPrepSyllabus.user_id == user_id,
             ExamPrepSyllabus.class_id == class_id
+        )
+    )
+    await db.execute(
+        delete(ExamPrepExtractedQuestion).where(
+            ExamPrepExtractedQuestion.user_id == user_id,
+            ExamPrepExtractedQuestion.class_id == class_id
+        )
+    )
+    await db.execute(
+        delete(ExamPrepMaterial).where(
+            ExamPrepMaterial.user_id == user_id,
+            ExamPrepMaterial.class_id == class_id
         )
     )
     
@@ -397,6 +439,30 @@ async def delete_class(
         )
     )
     await db.execute(
+        delete(ExamLockdownPitfall).where(
+            ExamLockdownPitfall.user_id == user_id,
+            ExamLockdownPitfall.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(ExamLockdownAttempt).where(
+            ExamLockdownAttempt.user_id == user_id,
+            ExamLockdownAttempt.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(ExamLockdownSession).where(
+            ExamLockdownSession.user_id == user_id,
+            ExamLockdownSession.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(ExamPrepRecommendedQuestion).where(
+            ExamPrepRecommendedQuestion.user_id == user_id,
+            ExamPrepRecommendedQuestion.class_id == class_id,
+        )
+    )
+    await db.execute(
         delete(ExamPrepTask).where(
             ExamPrepTask.user_id == user_id,
             ExamPrepTask.class_id == class_id,
@@ -418,6 +484,18 @@ async def delete_class(
         delete(ExamPrepSyllabus).where(
             ExamPrepSyllabus.user_id == user_id,
             ExamPrepSyllabus.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(ExamPrepExtractedQuestion).where(
+            ExamPrepExtractedQuestion.user_id == user_id,
+            ExamPrepExtractedQuestion.class_id == class_id,
+        )
+    )
+    await db.execute(
+        delete(ExamPrepMaterial).where(
+            ExamPrepMaterial.user_id == user_id,
+            ExamPrepMaterial.class_id == class_id,
         )
     )
     await db.execute(

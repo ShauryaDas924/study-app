@@ -1,41 +1,42 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useStore } from "@/store/useStore";
 import { Card, CardHeader } from "@/components/ui/Card";
 import TutorChat from "@/components/TutorChat";
 import { authFetch } from "@/lib/auth";
 import RequireAuth from "@/components/RequireAuth";
+import { Button } from "@/components/ui/Button";
+import ExamLockdownTutorMode from "@/components/exam-lockdown/ExamLockdownTutorMode";
+
+type TutorPitfall = {
+  pitfall: string;
+  [key: string]: unknown;
+};
 
 function TutorContent() {
   const classId = useStore((s) => s.selectedClassId);
 
-  const [pitfalls, setPitfalls] = useState<any[]>([]);
   const [generated, setGenerated] = useState("");
   const [loading, setLoading] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [mode, setMode] = useState<"normal" | "lockdown">("normal");
 
-  // ----------------------
-  // LOAD PITFALLS
-  // ----------------------
-  const fetchPitfalls = async () => {
-    if (!classId) return;
-
-    try {
+  const pitfallsQ = useQuery({
+    queryKey: ["homework-pitfalls", classId],
+    queryFn: async (): Promise<TutorPitfall[]> => {
+      if (!classId) return [];
       const res = await authFetch(`/homework/pitfalls/${classId}`);
       const data = await res.json();
-      setPitfalls(data || []);
-    } catch {
-      setPitfalls([]);
-    }
-  };
-
-  useEffect(() => {
-    fetchPitfalls();
-  }, [classId]);
+      return Array.isArray(data) ? data : [];
+    },
+    enabled: Boolean(classId),
+  });
+  const pitfalls = pitfallsQ.data ?? [];
 
   // ----------------------
-  // SELECT PITFALL → GENERATE PRACTICE
+  // SELECT PITFALL -> GENERATE PRACTICE
   // ----------------------
   const handleSelect = async (val: string) => {
     if (!classId || val === "Select a pitfall") return;
@@ -88,8 +89,7 @@ function TutorContent() {
         }
       );
 
-      // refresh UI
-      await fetchPitfalls();
+      await pitfallsQ.refetch();
       setGenerated("");
     } catch {
       alert("Failed to clear pitfalls");
@@ -103,7 +103,29 @@ function TutorContent() {
   // ----------------------
   return (
     <div className="py-7 space-y-6">
-      <h1 className="text-3xl font-semibold text-slate-900">Tutor</h1>
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold text-slate-900">Tutor</h1>
+          <div className="mt-1 text-sm text-slate-500">
+            Use normal tutoring or switch into an evidence-based exam prep plan.
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Button variant={mode === "normal" ? "primary" : "secondary"} onClick={() => setMode("normal")}>
+            Normal Tutor
+          </Button>
+          <Button variant={mode === "lockdown" ? "primary" : "secondary"} onClick={() => setMode("lockdown")}>
+            Exam Lockdown
+          </Button>
+        </div>
+      </div>
+
+      {mode === "lockdown" ? (
+        <Card>
+          <ExamLockdownTutorMode />
+        </Card>
+      ) : (
+        <>
 
       {/* ---------------- PRACTICE WEAK AREAS ---------------- */}
       <Card>
@@ -168,6 +190,8 @@ function TutorContent() {
 
         <TutorChat />
       </Card>
+        </>
+      )}
     </div>
   );
 }

@@ -97,10 +97,17 @@ export interface ExtractionStatusOut {
  * { id, prompt } from /practice/generate and remedial routes.
  * Full question_json is server-side and used by step/hint/why-wrong routes.
  */
+export interface PracticeQuestionJson {
+  type?: string;
+  options: string[];
+  correct_index: number;
+  [key: string]: unknown;
+}
+
 export interface PracticeQuestionStub {
   id: UUID;
   prompt: string;
-question_json?: any;
+  question_json: PracticeQuestionJson;
 }
 
 export interface PracticeGenerateIn {
@@ -316,6 +323,17 @@ export type ExamPrepConfidence = "high" | "medium" | "low";
 export type ExamPrepIntensity = "light" | "balanced" | "aggressive";
 export type ExamPrepTaskStatus = "pending" | "done" | "skipped";
 export type ExamPrepTaskType = "review" | "practice" | "flashcards" | "mixed" | "mock_exam";
+export type ExamPrepMaterialType =
+  | "syllabus"
+  | "notes"
+  | "past_exam"
+  | "past_homework"
+  | "practice_bank"
+  | "review_sheet"
+  | "professor_announcement"
+  | "answer_key"
+  | "solutions"
+  | "other";
 
 export interface ExamPrepSyllabusSummary {
   id: UUID;
@@ -350,10 +368,59 @@ export interface UploadExamPrepSyllabusOut {
 }
 
 export interface ExamPrepEvidenceItem {
-  source: "syllabus" | "concept" | "mastery" | "inference";
+  source: "syllabus" | "concept" | "mastery" | "inference" | "material" | "question";
   label: string;
   quote: string | null;
   concept_id: UUID | null;
+  question_id?: UUID | null;
+  material_id?: UUID | null;
+}
+
+export interface ExamPrepMaterial {
+  id: UUID;
+  class_id: UUID;
+  filename: string;
+  mime_type?: string | null;
+  material_type: ExamPrepMaterialType;
+  extraction_status: "pending" | "success" | "failed" | string;
+  parse_error?: string | null;
+  metadata_json: Record<string, unknown>;
+  question_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ExamPrepExtractedQuestion {
+  id: UUID;
+  class_id: UUID;
+  material_id: UUID;
+  problem_number?: string | null;
+  prompt_text: string;
+  answer_text?: string | null;
+  solution_text?: string | null;
+  topic_name?: string | null;
+  concept_id?: UUID | null;
+  source_ref_json: Record<string, unknown>;
+  confidence?: number | null;
+  extraction_json?: Record<string, unknown>;
+  status?: "active" | "stale" | string;
+  created_at?: string | null;
+  material?: ExamPrepMaterial | null;
+}
+
+export interface ExamPrepRecommendedQuestion {
+  id: UUID;
+  class_id: UUID;
+  plan_id: UUID;
+  extracted_question_id: UUID;
+  topic_prediction_id?: UUID | null;
+  rank: number;
+  why_selected?: string | null;
+  evidence_json: Record<string, unknown>;
+  confidence?: number | null;
+  status: "recommended" | "attempted" | "completed" | "skipped" | string;
+  created_at?: string | null;
+  question?: ExamPrepExtractedQuestion | null;
 }
 
 export interface ExamPrepTopicPrediction {
@@ -384,6 +451,24 @@ export interface ExamPrepPlanTask {
   topic_name?: string;
   status?: ExamPrepTaskStatus;
   source_json?: Record<string, unknown>;
+  learning_goal?: string;
+  recommended_question_ids?: UUID[];
+  recommended_extracted_question_ids?: UUID[];
+  assigned_questions?: {
+    recommended_question_id: UUID;
+    extracted_question_id: UUID;
+    rank?: number;
+    why_selected?: string | null;
+    confidence?: number | null;
+    source?: {
+      filename?: string | null;
+      material_type?: string | null;
+      problem_number?: string | null;
+      page?: number | string | null;
+      topic_name?: string | null;
+    };
+  }[];
+  question_assignment_reason?: string;
 }
 
 export interface ExamPrepPlanDay {
@@ -394,41 +479,81 @@ export interface ExamPrepPlanDay {
 
 export interface GenerateExamPrepPlanRequest {
   class_id: UUID;
-  syllabus_id: UUID;
+  syllabus_id?: UUID | null;
   exam_title: string;
-  exam_date_iso: string;
-  available_minutes_per_day: number;
-  intensity: ExamPrepIntensity;
+  exam_date_iso?: string | null;
+  exam_date?: string | null;
+  available_days?: number | null;
+  available_minutes_per_day?: number;
+  minutes_per_day?: number;
+  intensity?: ExamPrepIntensity;
+  target_score?: number | null;
+  target_grade?: string | null;
+  current_scores_json?: Record<string, unknown>;
+  weak_topics?: string[];
+  selected_material_ids?: UUID[];
+  active?: boolean;
+  allow_no_recommendations?: boolean;
 }
 
 export interface GenerateExamPrepPlanResponse {
   exam_prep_plan_id: UUID;
   topics: ExamPrepTopicPrediction[];
   plan_days: ExamPrepPlanDay[];
+  minimum_plan?: ExamPrepPlanVariant | null;
+  strong_plan?: ExamPrepPlanVariant | null;
+  recommended_questions?: ExamPrepRecommendedQuestion[];
   warnings: string[];
+  scoring_explanation?: string[];
+  target_gap_summary?: Record<string, unknown>;
+  plan_intensity?: string | null;
+  why_topics_ranked_this_way?: string | null;
+  missing_data_warnings?: string[];
+  diagnostics?: Record<string, unknown>;
 }
 
 export interface ExamPrepPlanSummary {
   id: UUID;
   class_id: UUID;
-  syllabus_id: UUID;
+  syllabus_id?: UUID | null;
   title: string;
   exam_title: string;
   exam_date: string;
   available_minutes_per_day: number;
   intensity: ExamPrepIntensity;
   status: string;
+  active?: boolean;
+  target_score?: number | null;
+  target_grade?: string | null;
+  current_scores_json?: Record<string, unknown>;
+  weak_topics_json?: string[];
+  selected_material_ids?: UUID[];
   topic_count: number;
   warning_count: number;
   created_at?: string | null;
   updated_at?: string | null;
 }
 
+export interface ExamPrepPlanVariant {
+  label: string;
+  tasks: string[];
+  note?: string;
+}
+
 export interface ExamPrepPlan extends ExamPrepPlanSummary {
   topics: ExamPrepTopicPrediction[];
   plan_days: ExamPrepPlanDay[];
   warnings: string[];
+  minimum_plan?: ExamPrepPlanVariant | null;
+  strong_plan?: ExamPrepPlanVariant | null;
   tasks: ExamPrepPlanTask[];
+  recommended_questions?: ExamPrepRecommendedQuestion[];
+  scoring_explanation?: string[];
+  target_gap_summary?: Record<string, unknown>;
+  plan_intensity?: string | null;
+  why_topics_ranked_this_way?: string | null;
+  missing_data_warnings?: string[];
+  diagnostics?: Record<string, unknown>;
 }
 
 export interface CreateExamPrepTasksOut {
@@ -439,6 +564,49 @@ export interface CreateExamPrepTasksOut {
 export interface AutoBuildDepsOut {
   edges_created: number;
   edges: { concept: string; depends_on: string }[];
+}
+
+export interface ExtractExamPrepQuestionsOut {
+  material: ExamPrepMaterial;
+  questions: ExamPrepExtractedQuestion[];
+  warnings: string[];
+}
+
+export interface ExamLockdownSession {
+  id: UUID;
+  class_id: UUID;
+  plan_id: UUID;
+  started_at?: string | null;
+  ended_at?: string | null;
+  status: string;
+}
+
+export interface ExamLockdownProgress {
+  plan_id: UUID;
+  recommended_count: number;
+  attempted_count: number;
+  completed_count: number;
+  skipped_count?: number;
+  pitfalls: { category: string; count: number }[];
+}
+
+export interface ExamLockdownTutorResponse {
+  response_markdown: string;
+  recommended_question_id: UUID;
+  question: ExamPrepExtractedQuestion;
+  material?: ExamPrepMaterial | null;
+}
+
+export interface ExamLockdownAttemptPayload {
+  class_id: UUID;
+  plan_id: UUID;
+  recommended_question_id: UUID;
+  session_id?: UUID | null;
+  user_answer_text?: string | null;
+  confidence?: number | null;
+  time_spent_sec?: number | null;
+  tutor_feedback_json?: Record<string, unknown>;
+  status?: "attempted" | "completed" | "skipped";
 }
 
 /* =========================
@@ -569,6 +737,25 @@ export const api = {
     return requestForm<UploadExamPrepSyllabusOut>("/plan/exam-prep/syllabi", form);
   },
 
+  uploadExamPrepMaterial: (classId: UUID, materialType: ExamPrepMaterialType, file: File) => {
+    const form = new FormData();
+    form.append("class_id", classId);
+    form.append("material_type", materialType);
+    form.append("file", file);
+    return requestForm<ExamPrepMaterial>("/plan/exam-prep/materials/upload", form);
+  },
+
+  listExamPrepMaterials: (classId: UUID) =>
+    request<ExamPrepMaterial[]>(`/plan/exam-prep/materials?class_id=${classId}`),
+
+  extractExamPrepQuestions: (materialId: UUID) =>
+    request<ExtractExamPrepQuestionsOut>(`/plan/exam-prep/materials/${materialId}/extract-questions`, {
+      method: "POST",
+    }),
+
+  listExamPrepMaterialQuestions: (materialId: UUID) =>
+    request<ExamPrepExtractedQuestion[]>(`/plan/exam-prep/materials/${materialId}/questions`),
+
   listExamPrepSyllabi: (classId: UUID) =>
     request<ExamPrepSyllabusSummary[]>(`/plan/exam-prep/syllabi?class_id=${classId}`),
 
@@ -578,11 +765,22 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  listExamPrepPlans: (classId: UUID) =>
-    request<ExamPrepPlanSummary[]>(`/plan/exam-prep/plans?class_id=${classId}`),
+  generateExamPrepPlanExtended: (body: GenerateExamPrepPlanRequest) =>
+    request<GenerateExamPrepPlanResponse>("/plan/exam-prep/generate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  listExamPrepPlans: (classId: UUID, active?: boolean) => {
+    const suffix = active === undefined ? "" : `&active=${active ? "true" : "false"}`;
+    return request<ExamPrepPlanSummary[]>(`/plan/exam-prep/plans?class_id=${classId}${suffix}`);
+  },
 
   getExamPrepPlan: (planId: UUID) =>
     request<ExamPrepPlan>(`/plan/exam-prep/plans/${planId}`),
+
+  getExamPrepPlanQuestions: (planId: UUID) =>
+    request<ExamPrepRecommendedQuestion[]>(`/plan/exam-prep/plans/${planId}/questions`),
 
   createExamPrepTasks: (planId: UUID, overwriteExisting = false) =>
     request<CreateExamPrepTasksOut>(`/plan/exam-prep/plans/${planId}/tasks`, {
@@ -594,6 +792,33 @@ export const api = {
     request<ExamPrepPlanTask>(`/plan/exam-prep/tasks/${taskId}`, {
       method: "PATCH",
       body: JSON.stringify({ status }),
+    }),
+
+  createExamLockdownSession: (body: { class_id: UUID; plan_id: UUID }) =>
+    request<ExamLockdownSession>("/exam-lockdown/sessions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  getExamLockdownProgress: (planId: UUID) =>
+    request<ExamLockdownProgress>(`/exam-lockdown/progress?plan_id=${planId}`),
+
+  callExamLockdownTutor: (body: {
+    class_id: UUID;
+    plan_id: UUID;
+    recommended_question_id: UUID;
+    user_question?: string | null;
+    user_attempt?: string | null;
+  }) =>
+    request<ExamLockdownTutorResponse>("/exam-lockdown/tutor", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  saveExamLockdownAttempt: (body: ExamLockdownAttemptPayload) =>
+    request<{ id: UUID; status: string; created_at?: string; pitfalls_saved: number }>("/exam-lockdown/attempts", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
 
   // dependencies
