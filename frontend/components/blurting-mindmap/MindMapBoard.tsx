@@ -37,6 +37,7 @@ const classId = useStore((s) => s.selectedClassId);
   const [tool, setTool] = useState<Tool>("select");
   const [nodes, setNodes] = useState<CustomNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
+  const [hydratedClassId, setHydratedClassId] = useState<string | null>(null);
 
  const attachCallbacks = useCallback(
   (nodesToWrap: CustomNode[]) =>
@@ -100,23 +101,30 @@ const classId = useStore((s) => s.selectedClassId);
   []
 );
 useEffect(() => {
-  if (!classId) return;
+  setNodes([]);
+  setEdges([]);
+
+  if (!classId) {
+    setHydratedClassId(null);
+    return;
+  }
 
   const saved = localStorage.getItem(`mindmap_board_${classId}`);
-  if (!saved) return;
-
-  try {
-    const parsed: MindMapStorage = JSON.parse(saved);
-    const restoredNodes = attachCallbacks(parsed.nodes ?? []);
-    setNodes(restoredNodes);
-    setEdges(parsed.edges ?? []);
-  } catch (error) {
-    console.error("Failed to load mind map from localStorage", error);
+  if (saved) {
+    try {
+      const parsed: MindMapStorage = JSON.parse(saved);
+      const restoredNodes = attachCallbacks(parsed.nodes ?? []);
+      setNodes(restoredNodes);
+      setEdges(parsed.edges ?? []);
+    } catch {
+      localStorage.removeItem(`mindmap_board_${classId}`);
+    }
   }
+  setHydratedClassId(classId);
 }, [classId, attachCallbacks]);
 
 useEffect(() => {
-  if (!classId) return;
+  if (!classId || hydratedClassId !== classId) return;
 
   const payload: MindMapStorage = {
     nodes: nodes.map((node) => ({
@@ -131,7 +139,7 @@ useEffect(() => {
   };
 
   localStorage.setItem(`mindmap_board_${classId}`, JSON.stringify(payload));
-}, [classId, nodes, edges]);
+}, [classId, hydratedClassId, nodes, edges]);
 
   const onNodesChange = useCallback((changes: NodeChange<CustomNode>[]) => {
     setNodes((current) => attachCallbacks(applyNodeChanges(changes, current)));

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore } from "@/store/useStore";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -12,7 +12,7 @@ export default function PracticePlayer() {
   const currentQuestion = useStore((s) => s.currentQuestion);
   const setPracticeIndex = useStore((s) => s.setPracticeIndex);
 
-  const [confidence, setConfidence] = useState(3);
+  const [confidence] = useState(3);
   const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
@@ -32,18 +32,14 @@ export default function PracticePlayer() {
     setSelectedIndex(null);
   }, [currentQuestion]);
 
-  /* ================= TIMER ================= */
-  const elapsedSec = useMemo(() => {
-    if (!startedAtRef.current) return 0;
-    return Math.floor((Date.now() - startedAtRef.current) / 1000);
-  }, [currentQuestion]);
-
   /* ================= GUARD ================= */
   if (!currentQuestion) {
     return <div className="text-slate-500">No question loaded</div>;
   }
 
-  const isMCQ = currentQuestion.question_json?.type === "mcq";
+  const questionJson = currentQuestion.question_json;
+  const options = questionJson?.options ?? [];
+  const isMCQ = questionJson?.type === "mcq" && options.length > 0;
 
   /* ================= SUBMIT ================= */
   async function submitAttempt() {
@@ -62,6 +58,7 @@ export default function PracticePlayer() {
       session_id: null,
     });
 
+    setIsCorrect(out.is_correct);
     setFeedback(out.feedback ? out.feedback.mistake : "Saved.");
 
     // ✅ AUTO NEXT
@@ -85,7 +82,7 @@ export default function PracticePlayer() {
       {/* MCQ OPTIONS */}
       {isMCQ && (
         <div className="mt-4 space-y-2">
-          {currentQuestion.question_json.options.map(
+          {options.map(
             (opt: string, i: number) => (
               <button
                 key={i}
@@ -97,9 +94,7 @@ export default function PracticePlayer() {
                 }`}
                 onClick={() => {
                   setSelectedIndex(i);
-                  setIsCorrect(
-                    i === currentQuestion.question_json.correct_index
-                  );
+                  setIsCorrect(null);
                 }}
               >
                 {opt}
@@ -112,11 +107,18 @@ export default function PracticePlayer() {
       {/* STEP COACH (open questions) */}
       {!isMCQ && <StepCoach questionId={currentQuestion.id} />}
 
+      {!isMCQ && (
+        <div className="mt-4 flex gap-2" aria-label="Self-assess this open response">
+          <Button onClick={() => setIsCorrect(true)}>I got it</Button>
+          <Button onClick={() => setIsCorrect(false)}>I missed it</Button>
+        </div>
+      )}
+
       {/* ACTIONS */}
       <div className="mt-4 flex items-center gap-3">
         <Button
           onClick={submitAttempt}
-          disabled={isMCQ && selectedIndex === null}
+          disabled={(isMCQ && selectedIndex === null) || (!isMCQ && isCorrect === null)}
         >
           Save Attempt
         </Button>

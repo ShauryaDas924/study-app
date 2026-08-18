@@ -1,192 +1,83 @@
-# Learning Loop v1 (Core System Architecture)
+# Learning loop
 
-## Purpose
+College AI's core design is a persisted feedback loop around AI-assisted content:
 
-Define how all core systems connect to create an adaptive study engine.
+```mermaid
+flowchart LR
+    A["Course material"] --> B["Concepts and source evidence"]
+    B --> C["Practice / flashcards / tutoring"]
+    C --> D["Attempts, confidence, timing, mistakes"]
+    D --> E["Mastery, memory, review dates, analytics"]
+    E --> C
+    E --> F["Study priorities"]
+    F --> C
+```
 
-This app is not a collection of tools.
+It is an MVP heuristic loop, not a claim of validated personalization.
 
-It is a CLOSED LEARNING LOOP that continuously adapts to the student.
+## 1. Capture and structure
 
-Core idea:
+Users create a course, write notes, or upload a supported document. The API extracts text, stores a note, and schedules process-local concept extraction. The background job can refine text, derive structured concepts, classify relationships, create embeddings, link concepts to the note, and generate/ground flashcards.
 
-Capture → Practice → Evaluate → Update Mastery → Plan → Repeat
+The note row persists extraction status and progress. Live status is also cached in memory; a restart interrupts work and resets stale queued/running notes rather than resuming them.
 
----
+## 2. Generate learning activities
 
-# Core Philosophy
+Practice generation reads the course's concepts and mastery values, favors weaker concepts, and persists a practice set and questions. Other surfaces reuse the same knowledge state for flashcards, hints, tutoring, homework coaching, analytics, and graph views.
 
-Students do not just need content.
+Provider output is probabilistic. Selected structured paths constrain it with prompts, JSON repair, schemas, bounded inputs, persisted IDs, and failure states; conversational paths may return model text directly.
 
-They need:
-- feedback
-- adaptation
-- prioritization
-- exam-oriented preparation
+## 3. Record evidence
 
-The system must always answer:
-"What should I study next?"
+Practice attempts store:
 
----
+- answer JSON;
+- server-derived MCQ correctness or self-assessed open correctness;
+- confidence and time spent;
+- question, concept, and optional exam-session links;
+- timestamp.
 
-# The Learning Loop
+Incorrect work can add mistake logs and tutor memory. Homework work review and Lockdown have their own persisted review/attempt/pitfall records.
 
-## Step 1 — Notes → Concept Extraction
+## 4. Update learning state
 
-User writes notes.
+A practice attempt applies forgetting since the previous practice, then a Bayesian-style mastery update. It writes history, timestamps, and the next review date. Repeated failures can create a remedial set. Flashcard ratings and detected homework misconceptions also modify mastery using separate heuristics.
 
-AI extracts:
-- concepts
-- definitions
-- importance weights
+See [mastery_system.md](mastery_system.md) for the exact behavior and inconsistencies.
 
-Store:
-- concepts table
-- note_concepts mapping
+## 5. Surface priorities
 
-Outcome:
-A structured knowledge map for the class.
+Readiness, weak-concept lists, mistake/tag analytics, and the knowledge graph expose stored learning signals. The generic daily/weekly planner can compute non-persisted schedules from mastery/review state, but its UI is currently unmounted.
 
----
+The live Planner path is Exam Prep:
 
-## Step 2 — Concepts → Practice Generation
+```text
+syllabus + uploaded exam material
+    → parsed evidence + persisted source questions
+    → topic scores + recommended source-question links
+    → persisted days/tasks
+    → Exam Lockdown coaching and progress
+```
 
-Practice is generated from:
-- selected concepts
-- low mastery concepts
-- upcoming exam topics
+This branch is more evidence-oriented than the generic planner. It can still be wrong: extraction, topic likelihood, difficulty, and coaching depend partly on model output.
 
-Questions follow the canonical schema.
+## 6. Repeat
 
-Outcome:
-Practice sets tied to concepts.
+The user returns to practice, flashcards, tutoring, or Lockdown. New evidence updates the relevant state, and subsequent screens read the updated records. There is no autonomous scheduler that continuously trains a student model in the background.
 
----
+## Persistence boundaries
 
-## Step 3 — Practice → Attempts
+- PostgreSQL is the system of record for server-side course and learning data.
+- Concept embeddings are stored in pgvector columns, while per-course cosine ranking is performed with NumPy in the application.
+- Blurting/mind-map boards and some UI/chat/session state live in browser `localStorage` and do not participate reliably in the server loop.
+- AI providers receive selected raw or derived context; provider retention and controls are external to this repository.
 
-When a student answers:
-Store:
-- correctness
-- time_spent
-- confidence rating
-- timestamp
+## Interpretation limits
 
-Outcome:
-Raw performance data.
-
----
-
-## Step 4 — Attempts → Mastery Update
-
-For each related concept:
-
-Update mastery probability using:
-- correctness
-- difficulty
-- confidence
-- forgetting decay
-
-Outcome:
-Dynamic mastery score per concept.
-
----
-
-## Step 5 — Mastery → Study Plan
-
-Study plan reads:
-- mastery scores
-- exam dates
-- exam weight/importance
-
-It computes:
-- urgency
-- review vs practice balance
-- daily task list
-
-Outcome:
-Personalized daily plan.
-
----
-
-## Step 6 — Study Plan → Practice Again
-
-Plan tells the student:
-- what to review
-- what to practice
-- what to maintain
-
-Student practices again.
-
-Loop repeats.
-
----
-
-# Minimal Data Flow Diagram
-
-Notes
-→ Concept Extraction
-→ Concepts DB
-
-Concepts + Mastery
-→ Practice Generation
-→ Questions
-
-Questions
-→ Attempts
-→ Mastery Update
-
-Mastery + Exams
-→ Study Plan
-→ Daily Tasks
-
-Daily Tasks
-→ Practice
-
-LOOP CONTINUES
-
----
-
-# MVP Definition
-
-A working MVP requires:
-
-1) Concept extraction
-2) Practice generation
-3) Attempt tracking
-4) Mastery updates
-5) Study plan generation
-
-Anything else is optional.
-
----
-
-# Design Principles
-
-1) Adaptation > Content volume
-2) Feedback > Flashcards
-3) Exam relevance > trivia
-4) Clarity > complexity
-
----
-
-# Success Criteria
-
-The system is successful if:
-
-- Students know what to study each day
-- Weak areas are surfaced automatically
-- Practice adapts over time
-- Students feel exam-ready
-
----
-
-# Future Extensions (Not MVP)
-
-- energy-based scheduling
-- burnout detection
-- streak psychology
-- time-of-day optimization
-- deep sequence ML models
-
-These are optimizations, not core.
+- Mastery/readiness are product heuristics, not grades or psychometric scores.
+- Open-response correctness is self-assessed.
+- Time spent is recorded but does not currently change mastery.
+- Stored readiness does not decay merely because time passes.
+- Exam topic predictions and recommendations are estimates, not guarantees.
+- No formal learning-outcome or AI-quality benchmark is included.
+- Process-local background work, application-side retrieval, and incomplete base migrations limit production suitability.

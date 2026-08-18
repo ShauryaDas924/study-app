@@ -121,29 +121,32 @@ def build_study_plan(
         # PRACTICE BLOCK
         # =====================
 
-        practice_minutes = max(20, remaining - 8)
+        reflection_reserve = min(5, max(0, remaining))
+        practice_minutes = max(0, remaining - reflection_reserve)
 
-        tasks.append({
-            "type":"practice",
-            "minutes": practice_minutes,
-            "goal":
-            "Solve exam-style problems; justify method selection."
-        })
+        if practice_minutes:
+            tasks.append({
+                "type":"practice",
+                "minutes": practice_minutes,
+                "goal":
+                "Solve exam-style problems; justify method selection."
+            })
 
-        remaining -= practice_minutes
+            remaining -= practice_minutes
 
         # =====================
         # REFLECTION
         # =====================
 
-        reflection_minutes = max(5, remaining)
+        reflection_minutes = max(0, remaining)
 
-        tasks.append({
-            "type":"reflection",
-            "minutes": reflection_minutes,
-            "goal":
-            "Log 1 mistake pattern + detection rule."
-        })
+        if reflection_minutes:
+            tasks.append({
+                "type":"reflection",
+                "minutes": reflection_minutes,
+                "goal":
+                "Log 1 mistake pattern + detection rule."
+            })
 
         plan.append({
             "day": day_date,
@@ -203,29 +206,44 @@ def build_weekly_curriculum(
                     break
 
             tasks = []
+            remaining = available_minutes_per_day
+
+            reflection_minutes = min(8, remaining)
+            remaining -= reflection_minutes
+            practice_minutes = min(max(0, remaining), max(25, available_minutes_per_day // 2))
+            remaining -= practice_minutes
+            review_targets = targets[:2]
+            review_minutes = remaining // len(review_targets) if review_targets else 0
 
             # review blocks
-            for t in targets[:2]:
+            for index, t in enumerate(review_targets):
+                minutes = review_minutes
+                if index == len(review_targets) - 1:
+                    minutes = remaining - review_minutes * index
+                if minutes <= 0:
+                    continue
                 tasks.append({
                     "type": "review",
                     "concept_id": str(t["concept_id"]),
-                    "minutes": max(10, available_minutes_per_day // 6),
+                    "minutes": minutes,
                     "goal": "Rewrite definition + when-to-use + 1 pitfall, then do 1 mini example."
                 })
 
             # practice block
-            tasks.append({
-                "type": "practice",
-                "minutes": max(25, available_minutes_per_day // 2),
-                "goal": "Solve exam-style questions; justify method selection."
-            })
+            if practice_minutes:
+                tasks.append({
+                    "type": "practice",
+                    "minutes": practice_minutes,
+                    "goal": "Solve exam-style questions; justify method selection."
+                })
 
             # reflection / error log
-            tasks.append({
-                "type": "reflection",
-                "minutes": 8,
-                "goal": "Log 1 mistake pattern + a detection rule."
-            })
+            if reflection_minutes:
+                tasks.append({
+                    "type": "reflection",
+                    "minutes": reflection_minutes,
+                    "goal": "Log 1 mistake pattern + a detection rule."
+                })
 
             week_days.append({
                 "day": day_dt.date().isoformat(),

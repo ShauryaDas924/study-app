@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
+import logging
 import re
 import json
 import time
@@ -20,11 +22,17 @@ from app.models import (
 
 from app.db import get_db
 from app.services.llm import client, kimi_client, top_k_concepts
-from app.services.file_extraction import extract_text
+from app.services.file_extraction import extract_text, validate_image_bytes, validate_pdf_bytes
 from app.services.auth import get_current_user_id
 from app.services.mastery import update_mastery_value
+from app.services.upload_safety import (
+    DOCUMENT_UPLOAD_EXTENSIONS,
+    IMAGE_OR_PDF_EXTENSIONS,
+    read_upload_limited,
+)
 
 router = APIRouter(prefix="/homework", tags=["homework"])
+logger = logging.getLogger(__name__)
 
 HOMEWORK_RAG_TOP_K = 4
 MIN_HOMEWORK_GROUNDING_SCORE = 0.22
@@ -79,23 +87,28 @@ async def ensure_class_owned(db: AsyncSession, user_id: UUID, class_id: UUID):
 
 
 class HWIn(BaseModel):
-    class_id: str
-    question: str
+    class_id: str = Field(min_length=1, max_length=36)
+    question: str = Field(min_length=1, max_length=12_000)
 
 class StepCheckIn(BaseModel):
-    class_id: str
-    session_id: str
-    user_prompt: str
-    selected_step: str | None = None
+    class_id: str = Field(min_length=1, max_length=36)
+    session_id: str = Field(min_length=1, max_length=36)
+    user_prompt: str = Field(min_length=1, max_length=4_000)
+    selected_step: str | None = Field(default=None, max_length=8_000)
     selected_region: dict | None = None
-    action: str = "check_this_step"
+    action: Literal[
+        "check_this_step",
+        "help_me_continue",
+        "what_did_i_do_right",
+        "what_to_watch_next_time",
+    ] = "check_this_step"
     # check_this_step | help_me_continue | what_did_i_do_right | what_to_watch_next_time
     
 class StepCheckOut(BaseModel):
     step_verdict: str | None = None
     concept_name: str | None = None
-    correct_parts: list[str] = []
-    issues: list[str] = []
+    correct_parts: list[str] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
     next_step: str | None = None
     next_time_rule: str | None = None
     pitfall_tag: str | None = None
@@ -232,7 +245,7 @@ async def homework_help(
     db: AsyncSession = Depends(get_db),
     current_user_id: str = Depends(get_current_user_id)
 ):
-    print("\n📨 Incoming Question:", body.question)
+    logger.info("homework_help_started question_chars=%d", len(body.question or ""))
     t0 = time.perf_counter()
     # ✅ Validate class_id
     if not body.class_id:
@@ -248,7 +261,7 @@ async def homework_help(
     # ANALYZE WORK MODE
     # ----------------------
     if body.question and "analyze my work" in body.question.lower():
-        print("\n🧠 ANALYZE MODE TRIGGERED")
+        logger.info("homework_analysis_mode_started")
         question_lower = body.question.lower()
         db.add(ChatMemory(
             user_id=current_user_id,
@@ -282,8 +295,12 @@ async def homework_help(
         )
 
         history_text = raw_history_text if use_history else ""
-        print("\n📜 Chat History Used for Analysis:")
-        print(history_text)
+        logger.info(
+            "homework_analysis_history messages=%d included=%s chars=%d",
+            len(history),
+            use_history,
+            len(history_text),
+        )
 
         resp = kimi_client.chat.completions.create(
             model="kimi-k2.5",
@@ -333,19 +350,18 @@ cash_flow_classification
 
         raw = resp.choices[0].message.content
         raw = raw.replace("```json", "").replace("```", "").strip()
-        print("\n🤖 RAW LLM RESPONSE:")
-        print(raw)
         try:
             data = json.loads(raw)
         except Exception as e:
-            print("❌ JSON PARSE ERROR:", e)
-            print("RAW:", raw)
+            logger.warning(
+                "homework_analysis_parse_failed error_type=%s output_chars=%d",
+                type(e).__name__,
+                len(raw),
+            )
             return {"help": "Error parsing analysis response"}
 
         strengths = data.get("strengths", [])
         pitfalls = data.get("pitfalls", [])
-        print("\n🧠 Generating NATURAL explanation...")
-
         natural_resp = kimi_client.chat.completions.create(
             model="kimi-k2.5",
             messages=[
@@ -389,10 +405,6 @@ Explain this naturally to the student.
         )
 
         natural_answer = natural_resp.choices[0].message.content
-
-        print("\n🗣 NATURAL RESPONSE:")
-        print(natural_answer)
-        print("\n💾 Saving Pitfalls:")
         for p in pitfalls:
             stmt = insert(StudentPitfall).values(
                 user_id=current_user_id,
@@ -407,7 +419,6 @@ Explain this naturally to the student.
             )
 
             await db.execute(stmt)
-            print("Saving:", p)
 
         # ✅ THEN QUERY
         res = await db.execute(
@@ -418,8 +429,11 @@ Explain this naturally to the student.
         )
 
         rows = res.scalars().all()
-        print("📊 Total pitfalls now:", len(rows))
-        print("✅ Pitfalls committed to DB")
+        logger.info(
+            "homework_analysis_completed detected_pitfalls=%d stored_pitfalls=%d",
+            len(pitfalls),
+            len(rows),
+        )
 
         answer = natural_answer
 
@@ -450,7 +464,7 @@ Explain this naturally to the student.
             Concept.user_id == current_user_id
         )
     )
-    print(f"⏱ concept query: {time.perf_counter() - t_concepts:.2f}s")
+    concept_query_seconds = time.perf_counter() - t_concepts
 
     concepts = res.scalars().all()
 
@@ -461,7 +475,7 @@ Explain this naturally to the student.
         concepts,
         k=HOMEWORK_RAG_TOP_K
     )
-    print(f"⏱ top_k_concepts: {time.perf_counter() - t_topk:.2f}s")
+    retrieval_seconds = time.perf_counter() - t_topk
 
     scored_concepts = [(float(score), c) for score, c in scored_concepts]
     kept_scored_concepts = [
@@ -475,30 +489,18 @@ Explain this naturally to the student.
         4,
     )
     grounding_mode = "strong_note_grounded" if kept_scored_concepts else "weak_or_no_context"
-    print("\nTOTAL CONCEPTS IN CLASS:", len(concepts))
-
     missing = sum(1 for c in concepts if c.embedding is None)
-    print("CONCEPTS WITH MISSING EMBEDDINGS:", missing)
-    print("\n===== RAG CONCEPT RETRIEVAL =====")
-
-    for i, (score, c) in enumerate(scored_concepts, 1):
-        print(f"\n[Concept {i}]")
-        print(f"Score: {round(score,4)}")
-        print(f"Name: {c.name}")
-
-    print("[homework_rag]", {
-        "class_id": str(class_uuid),
-        "user_id": str(current_user_id),
-        "concepts_loaded": len(concepts),
-        "candidates_retrieved": len(scored_concepts),
-        "kept_after_threshold": len(kept_scored_concepts),
-        "min_score": MIN_HOMEWORK_GROUNDING_SCORE,
-        "top_candidates": [
-            {"name": c.name, "score": round(float(score), 4)}
-            for score, c in scored_concepts
-        ],
-        "grounding_mode": grounding_mode,
-    })
+    logger.info(
+        "homework_retrieval concepts=%d missing_embeddings=%d candidates=%d kept=%d "
+        "grounding_mode=%s concept_query_sec=%.3f retrieval_sec=%.3f",
+        len(concepts),
+        missing,
+        len(scored_concepts),
+        len(kept_scored_concepts),
+        grounding_mode,
+        concept_query_seconds,
+        retrieval_seconds,
+    )
 
     if kept_scored_concepts:
         context = concept_context_block(kept_scored_concepts)
@@ -570,7 +572,7 @@ Return the single most likely misconception shown by the student.
         )
 
         mis = mis_resp.choices[0].message.content.strip()
-        print(f"⏱ misconception call: {time.perf_counter() - t_mis:.2f}s")
+        logger.info("homework_misconception_check_sec=%.3f", time.perf_counter() - t_mis)
     # -------- HANDLE MISCONCEPTIONS --------
     if mis.lower().strip() != "none":
 
@@ -621,7 +623,7 @@ Return the single most likely misconception shown by the student.
         .order_by(ChatMemory.created_at.desc())
         .limit(6)
     )
-    print(f"⏱ history query: {time.perf_counter() - t_history:.2f}s")
+    logger.info("homework_history_query_sec=%.3f", time.perf_counter() - t_history)
 
     history = mem_res.fetchall()
 
@@ -678,7 +680,7 @@ Return the single most likely misconception shown by the student.
         student_state = "strong"
     else:
         student_state = "normal"
-    print("🧠 Student state:", student_state)
+    logger.info("homework_student_state=%s", student_state)
     
     fm_keywords = [
     "annuity", "present value", "accumulated value", "future value",
@@ -1149,8 +1151,11 @@ Retrieved course context:
 )
 
     answer = resp.choices[0].message.content
-    print(f"⏱ tutor call: {time.perf_counter() - t_tutor:.2f}s")
-    print(f"⏱ total /help: {time.perf_counter() - t0:.2f}s")
+    logger.info(
+        "homework_help_completed tutor_sec=%.3f total_sec=%.3f",
+        time.perf_counter() - t_tutor,
+        time.perf_counter() - t0,
+    )
     # -------- SAVE ASSISTANT MESSAGE --------
     db.add(ChatMemory(
         user_id=current_user_id,
@@ -1190,9 +1195,15 @@ async def homework_upload_help(
         raise HTTPException(400, "Invalid class_id")
     await ensure_class_owned(db, current_user_id, class_uuid)
 
-    content = await file.read()
-    text = await extract_text(file.filename, content)
+    filename, content = await read_upload_limited(file, DOCUMENT_UPLOAD_EXTENSIONS)
+    try:
+        text = await extract_text(filename, content)
+    except Exception as exc:
+        logger.warning("homework_upload_extraction_failed error_type=%s", type(exc).__name__)
+        raise HTTPException(400, "The uploaded assignment could not be processed") from exc
     text = clean_extracted_text(text)
+    if not text:
+        raise HTTPException(400, "No text could be extracted from the uploaded assignment")
 
     questions = split_homework_questions(text)
 
@@ -1242,21 +1253,31 @@ async def create_review_work_session(
         raise HTTPException(400, "Invalid class_id")
     await ensure_class_owned(db, current_user_id, class_uuid)
 
-    content = await file.read()
+    filename, content = await read_upload_limited(file, IMAGE_OR_PDF_EXTENSIONS)
+
+    try:
+        if filename.lower().endswith(".pdf"):
+            validate_pdf_bytes(content)
+            source_type = "pdf"
+        else:
+            image_mime = validate_image_bytes(content)
+            source_type = "jpeg" if image_mime == "image/jpeg" else "png"
+    except ValueError as exc:
+        logger.warning("review_session_validation_failed error_type=%s", type(exc).__name__)
+        raise HTTPException(400, "The uploaded work is not a valid PDF or image") from exc
 
     extracted_text = ""
     try:
-        extracted_text = await extract_text(file.filename, content)
+        extracted_text = await extract_text(filename, content)
         extracted_text = clean_extracted_text(extracted_text)
     except Exception:
         extracted_text = ""
 
     img_b64 = base64.b64encode(content).decode()
-    source_type = "pdf" if (file.filename or "").lower().endswith(".pdf") else "image"
     session = WorkReviewSession(
         user_id=current_user_id,
         class_id=class_uuid,
-        filename=file.filename,
+        filename=filename,
         extracted_text=extracted_text,
         image_base64=img_b64,
         source_type=source_type
@@ -1268,7 +1289,7 @@ async def create_review_work_session(
 
     return {
         "session_id": str(session.id),
-        "filename": file.filename,
+        "filename": filename,
         "extracted_text": extracted_text[:4000]
     }
 
@@ -1335,21 +1356,27 @@ async def review_student_work(
     )
 
     concepts = res.scalars().all()
-    content = await file.read()
-    mime_type = "application/pdf" if (file.filename or "").lower().endswith(".pdf") else "image/png"
+    filename, content = await read_upload_limited(file, IMAGE_OR_PDF_EXTENSIONS)
+    try:
+        if filename.lower().endswith(".pdf"):
+            validate_pdf_bytes(content)
+            mime_type = "application/pdf"
+        else:
+            mime_type = validate_image_bytes(content)
+    except ValueError as exc:
+        logger.warning("review_work_validation_failed error_type=%s", type(exc).__name__)
+        raise HTTPException(400, "The uploaded work is not a valid PDF or image") from exc
 
     # -------- RETRIEVE RELEVANT CONCEPTS --------
     review_text = ""
-    filename = file.filename or ""
-    if filename.lower().endswith((".pdf", ".ppt", ".pptx")):
+    if filename.lower().endswith(".pdf"):
         try:
             review_text = clean_extracted_text(await extract_text(filename, content))
         except Exception as e:
-            print("[review_work_rag] extracted_text_failed", {"error": str(e)})
+            logger.warning("review_work_extraction_failed error_type=%s", type(e).__name__)
 
     query = (
         clip_text(review_text, 2400)
-        or f"student uploaded work review {filename}".strip()
         or "student handwritten math solution"
     )
 
@@ -1359,12 +1386,7 @@ async def review_student_work(
         k=4
     )
 
-    print("\n===== REVIEW CONCEPT RETRIEVAL =====")
-
-    for i, (score, c) in enumerate(scored_concepts, 1):
-        print(f"\n[Concept {i}]")
-        print(f"Score: {round(score,4)}")
-        print(f"Name: {c.name}")
+    logger.info("review_work_retrieval matches=%d", len(scored_concepts))
 
     img_b64 = base64.b64encode(content).decode()
 
@@ -1551,6 +1573,9 @@ async def step_check(
     db: AsyncSession = Depends(get_db),
     current_user_id: str = Depends(get_current_user_id)
 ):
+    if body.selected_region and len(json.dumps(body.selected_region).encode("utf-8")) > 20_000:
+        raise HTTPException(413, "Selected region metadata is too large")
+
     if not body.class_id:
         raise HTTPException(400, "class_id required")
 
@@ -1577,7 +1602,11 @@ async def step_check(
         )
     )
     concepts = res.scalars().all()
-    mime_type = "application/pdf" if session.source_type == "pdf" else "image/png"
+    mime_type = {
+        "pdf": "application/pdf",
+        "jpeg": "image/jpeg",
+        "jpg": "image/jpeg",
+    }.get(session.source_type, "image/png")
     retrieval_query = f"""
     Student uploaded work.
     User prompt: {body.user_prompt}
@@ -1894,7 +1923,7 @@ async def practice_pitfall(
         raise HTTPException(400, "Invalid class_id")
     await ensure_class_owned(db, current_user_id, class_uuid)
 
-    print("\n🎯 PRACTICE MODE:", pitfall)
+    logger.info("pitfall_practice_started")
 
     # -------- LOAD CONCEPTS --------
     res = await db.execute(
@@ -1923,8 +1952,6 @@ Common mistake: {c.pitfalls}
 """
         for c in relevant
     ])[:3000]
-
-    print("\n🧠 USING CONCEPTS:\n", concept_context)
 
     # -------- GENERATE QUESTIONS --------
     resp = kimi_client.chat.completions.create(
@@ -2008,7 +2035,11 @@ Relevant concepts:
 
     questions = resp.choices[0].message.content
 
-    print("\n🧪 GENERATED QUESTIONS:\n", questions)
+    logger.info(
+        "pitfall_practice_completed concepts=%d output_chars=%d",
+        len(relevant),
+        len(questions or ""),
+    )
 
     return {"questions": questions}
 

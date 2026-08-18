@@ -1,271 +1,162 @@
 # Architecture
 
-## High-Level Architecture
-
-College AI is a two-app web system:
-
-- `frontend/`: Next.js client application.
-- `backend/`: FastAPI API server.
-
-Persistence is modeled with SQLAlchemy ORM classes in `backend/app/models.py` and backed by PostgreSQL through async SQLAlchemy. Authentication uses Supabase sessions on the frontend and backend token verification through Supabase Auth.
+College AI is a browser client, an authenticated REST API, PostgreSQL, and two external AI-provider boundaries. It is a modular monolith rather than a distributed system.
 
 ```mermaid
-flowchart LR
-  User["Student in browser"] --> Frontend["Next.js frontend"]
-  Frontend --> Auth["Supabase Auth client"]
-  Frontend --> API["FastAPI backend"]
-  API --> AuthVerify["Supabase token verification"]
-  API --> DB["PostgreSQL via async SQLAlchemy"]
-  API --> LLM["LLM services / OpenAI SDK"]
-  API --> Extract["File extraction: PyMuPDF, Pillow, python-pptx"]
-  API --> Jobs["BackgroundTasks concept extraction"]
+flowchart TB
+    subgraph Browser
+        NEXT["Next.js App Router\nReact + TypeScript"]
+        QUERY["TanStack Query"]
+        STORE["Zustand + localStorage drafts"]
+        NEXT --- QUERY
+        NEXT --- STORE
+    end
 
-  subgraph FrontendFeatures["Frontend feature areas"]
-    NotesUI["Notes"]
-    TutorUI["Tutor"]
-    PlannerUI["Planner / Exam Prep"]
-    PracticeUI["Practice"]
-    AnalyticsUI["Analytics"]
-  end
+    SUPA["Supabase Auth"]
 
-  subgraph BackendRouters["Backend routers"]
-    Classes["/classes"]
-    Notes["/notes and /upload"]
-    Practice["/practice"]
-    Homework["/homework"]
-    Plan["/plan"]
-    ExamPrep["/plan/exam-prep"]
-    Lockdown["/exam-lockdown"]
-  end
+    subgraph API["FastAPI process"]
+        ROUTES["Authenticated routers"]
+        DOMAIN["Learning and exam services"]
+        BG["BackgroundTasks\nin-memory status\nsemaphore = 1"]
+        ROUTES --> DOMAIN
+        ROUTES -. "schedule extraction" .-> BG
+        BG --> DOMAIN
+    end
 
-  Frontend --> FrontendFeatures
-  API --> BackendRouters
+    DB[("PostgreSQL\nSQLAlchemy + JSONB + pgvector")]
+    OPENAI["OpenAI API"]
+    KIMI["Moonshot / Kimi API"]
+
+    NEXT -->|"sign in / refresh"| SUPA
+    NEXT -->|"Bearer token + JSON/form data"| ROUTES
+    ROUTES -->|"validate token"| SUPA
+    ROUTES --> DB
+    DOMAIN --> DB
+    DOMAIN --> OPENAI
+    DOMAIN --> KIMI
 ```
 
-## Entry Points
+## Frontend
 
-| Layer | Entry point | Notes |
-| --- | --- | --- |
-| Frontend app | `frontend/app/layout.tsx` | App shell and global layout. |
-| Frontend home | `frontend/app/page.tsx` | Root page. |
-| Frontend routes | `frontend/app/*/page.tsx` | Next.js app routes for product pages. |
-| Frontend API client | `frontend/lib/api.ts` | Typed API wrapper used by components. |
-| Frontend auth | `frontend/lib/auth.ts`, `frontend/lib/supabaseClient.ts` | Session and authenticated fetch helpers. |
-| Backend app | `backend/app/main.py` | Creates FastAPI app, configures CORS, registers routers. |
-| Backend DB | `backend/app/db.py` | Async engine, sessionmaker, dependency. |
-| Backend models | `backend/app/models.py` | SQLAlchemy ORM models. |
+The Next.js 16 App Router application is client-heavy. Pages compose feature components, TanStack Query handles API-backed server state, and Zustand holds selected-course/application state. The API client in `frontend/lib/api.ts` attaches the current Supabase access token.
 
-## Major Backend Modules
+The browser also persists several drafts with `localStorage`:
 
-| Module | Responsibility |
-| --- | --- |
-| `backend/app/routers/classes.py` | Class CRUD and clearing class-scoped data. |
-| `backend/app/routers/notes.py` | Manual note creation, listing, retrieval, extraction job start/status. |
-| `backend/app/routers/uploads.py` | Note file upload and text extraction before queued concept extraction. |
-| `backend/app/routers/concepts.py` | Concept extraction endpoint, concept listing, flashcard routes. |
-| `backend/app/routers/practice.py` | Practice generation, attempts, exam sessions, hints, step checks, analytics, dependencies, flashcards due/grade. |
-| `backend/app/routers/homework.py` | Homework help, homework upload help, chat history, work review, step review, pitfalls. |
-| `backend/app/routers/plan.py` | Daily and weekly plan generation. |
-| `backend/app/routers/exam_prep.py` | Syllabus/material upload, material question extraction, exam prep plan generation, plan detail, tasks. |
-| `backend/app/routers/exam_lockdown.py` | Exam Lockdown sessions, progress, tutor response, attempts, pitfalls. |
-| `backend/app/routers/performance.py` | Exam performance analysis and insights. |
-| `backend/app/services/llm.py` | LLM clients and prompt/service helpers. |
-| `backend/app/services/file_extraction.py` | PDF/text/PPT/image extraction helpers. |
-| `backend/app/services/mastery.py` | Mastery update and forgetting logic. |
-| `backend/app/services/exam_prep.py` | Exam prep extraction, topic ranking, recommendation, and plan construction logic. |
-| `backend/app/services/exam_lockdown.py` | Exam coach response and pitfall extraction logic. |
+- blurting and mind-map boards, keyed by course;
+- homework chat display history, keyed by course;
+- flashcard/session UI state;
+- extraction polling metadata and the current practice index.
 
-## Major Frontend Modules
+That content is separate from PostgreSQL. It is neither encrypted nor automatically covered by server-side class deletion.
 
-| Module | Responsibility |
-| --- | --- |
-| `frontend/app/*/page.tsx` | Route-level pages. |
-| `frontend/components/` | Reusable UI and feature components. |
-| `frontend/components/exam-prep/` | Planner Exam Lockdown setup and plan display. |
-| `frontend/components/exam-lockdown/` | Tutor Exam Lockdown workspace and coach response. |
-| `frontend/components/ui/` | Small shared UI primitives. |
-| `frontend/lib/api.ts` | API request helpers and TypeScript response types. |
-| `frontend/lib/auth.ts` | Authenticated fetch and login redirect behavior. |
-| `frontend/store/useStore.ts` | Zustand state for selected class, note, practice session, exam session, timer, and mastery progress. |
+The current Planner route mounts `ExamPrepPlannerPanel`. The earlier daily and weekly planner components are present but unmounted.
 
-## Data Flow
+## Authentication and authorization
 
-### Authenticated request flow
+1. The browser obtains a Supabase session.
+2. API calls send `Authorization: Bearer <access-token>`.
+3. `backend/app/services/auth.py` calls Supabase's `/auth/v1/user` endpoint with that token and the configured anonymous client key.
+4. The resulting UUID is injected into routes as `user_id`.
+5. Queries constrain user-owned records with that ID and, for nested flows, the selected class ID.
+
+`DEV_MODE=true` bypasses token verification only when `APP_ENV` is explicitly `development` or `test`; the application refuses to start with the bypass in another environment. This mode represents a fixed development UUID and must never be used on a shared or public service.
+
+Authorization is primarily application-layer. The repository does not provide or prove production PostgreSQL row-level-security policies.
+
+## Data access
+
+FastAPI dependencies create async SQLAlchemy sessions backed by `asyncpg`. The engine uses `NullPool`, pre-pings connections, and sets a database statement timeout. Domain rows use PostgreSQL UUIDs, JSONB, ordinary indexed columns, and a `Vector(1536)` field for concept embeddings.
+
+The repository has model declarations for the full domain but not a complete migration history. The three SQL files under `backend/migrations/` are incremental Exam Prep/Lockdown changes; there is no baseline migration or startup `create_all` path.
+
+## Note ingestion and background extraction
 
 ```mermaid
 sequenceDiagram
-  participant Browser
-  participant SupabaseClient as Supabase client
-  participant Frontend as Frontend API helper
-  participant Backend as FastAPI route
-  participant SupabaseAuth as Supabase Auth
-  participant DB as Postgres
+    participant B as Browser
+    participant A as FastAPI
+    participant D as PostgreSQL
+    participant J as In-process job
+    participant P as AI providers
 
-  Browser->>SupabaseClient: get session
-  SupabaseClient-->>Frontend: access token
-  Frontend->>Backend: request with Bearer token
-  Backend->>SupabaseAuth: verify token
-  SupabaseAuth-->>Backend: user id
-  Backend->>DB: user/class-scoped query
-  DB-->>Backend: rows
-  Backend-->>Frontend: JSON
+    B->>A: Upload supported file (bounded read)
+    A->>A: Sanitize filename and extract text
+    A->>D: Store note with queued status
+    A-->>B: Note ID, extracted text, queued status
+    A-->>J: FastAPI BackgroundTask
+    J->>D: Mark running and read note
+    J->>P: Refine, extract, classify, embed, generate cards
+    J->>D: Persist concepts, links, cards, progress or error
+    B->>A: Poll extraction status
+    A->>D: Read persisted fallback status
+    A-->>B: Progress / terminal state
 ```
 
-### Notes and concept extraction
+The process maintains a small live-status dictionary and permits one heavy concept extraction at a time. The note row is the durable source for terminal state. On API startup, previously queued/running notes are reset to idle with an interruption message. There is no durable queue, cross-process lock, automatic retry policy, or Redis dependency.
+
+Chunk-level model calls may use a separate bounded concurrency setting. That does not turn the job runner into a distributed worker system.
+
+## Embeddings and retrieval
+
+Concept embeddings use OpenAI `text-embedding-3-small` and are stored in the pgvector-compatible column. For a query, the service:
+
+1. embeds the query;
+2. loads concepts for the selected user/course;
+3. generates a missing concept embedding when required;
+4. converts vectors to NumPy arrays;
+5. computes cosine similarity in Python and sorts the small candidate set.
+
+The database is therefore embedding storage, not the nearest-neighbor execution engine. A larger deployment would normally move ranking to indexed database queries or a dedicated retrieval service.
+
+## Practice and mastery flow
+
+Practice generation starts with course concepts and stored mastery, favors weaker concepts, and writes a `PracticeSet` plus `Question` rows. Attempt submission verifies question/session ownership, recomputes MCQ correctness from the stored answer index, and otherwise accepts a self-assessment.
+
+An attempt can update:
+
+- the attempt record and timing/confidence;
+- mistake logs and tutor memory;
+- the concept's mastery and mastery history;
+- its next-review timestamp;
+- cross-concept weakness output;
+- an automatically generated remedial set after repeated failures.
+
+Forgetting is applied when an attempt updates mastery, not continuously. The readiness endpoint averages currently stored mastery values. The exact formula is documented in [`backend/mastery_system.md`](../backend/mastery_system.md).
+
+## Exam Prep and Exam Lockdown
+
+Exam Prep is the mounted planning architecture:
 
 ```mermaid
-flowchart TD
-  Upload["User creates note or uploads file"] --> Route["/notes or /upload/notes"]
-  Route --> ExtractText["extract_text"]
-  ExtractText --> NoteRow["Note row"]
-  NoteRow --> Queue["BackgroundTasks concept_extraction_job"]
-  Queue --> LLM["LLM concept extraction"]
-  LLM --> Concepts["Concepts, NoteConcepts, Flashcards"]
+flowchart LR
+    SYL["Syllabus"] --> PARSE["Parsed topics and schedule evidence"]
+    MAT["Exam material"] --> EXTRACT["Persisted extracted questions + source refs"]
+    PARSE --> SCORE["Topic scoring and plan generation"]
+    EXTRACT --> SCORE
+    SCORE --> PLAN["Plan, days, tasks, warnings"]
+    SCORE --> REC["Ranked source-linked recommendations"]
+    PLAN --> LOCK["Exam Lockdown session"]
+    REC --> LOCK
+    LOCK --> ATT["Attempts, progress, pitfalls"]
 ```
 
-### Practice and mastery
+Models help parse evidence and coach the user. Persistence and deterministic service logic establish record ownership, active status, scoring inputs, schedules, recommendation links, progress, and failure responses. “Likely topic” and confidence values are estimates, not guarantees about an exam.
 
-```mermaid
-flowchart TD
-  Concepts["Class concepts"] --> Generate["/practice/generate"]
-  Generate --> Questions["PracticeSet + Question rows"]
-  Questions --> Attempt["/practice/questions/{id}/attempt"]
-  Attempt --> Mastery["update_mastery_value + Mastery row"]
-  Attempt --> Mistakes["MistakeLog"]
-  Mastery --> Readiness["Readiness / analytics"]
-```
+## Provider boundaries
 
-### Exam Lockdown
+Both provider keys can be needed for the complete feature set:
 
-```mermaid
-flowchart TD
-  Materials["Uploaded exam prep materials"] --> MaterialRows["exam_prep_materials"]
-  MaterialRows --> ExtractQuestions["/materials/{id}/extract-questions"]
-  ExtractQuestions --> ExtractedQuestions["exam_prep_extracted_questions"]
-  ExtractedQuestions --> GeneratePlan["/plan/exam-prep/generate"]
-  GeneratePlan --> Plan["exam_prep_plans + topic predictions + day plan JSON"]
-  GeneratePlan --> Recs["exam_prep_recommended_questions"]
-  Plan --> Tutor["Tutor Exam Lockdown mode"]
-  Recs --> Tutor
-  Tutor --> Coach["/exam-lockdown/tutor"]
-  Tutor --> Attempts["/exam-lockdown/attempts"]
-  Attempts --> Progress["/exam-lockdown/progress"]
-```
+- OpenAI handles embeddings, vision-assisted extraction, and several practice, exam, planning, and lockdown operations.
+- The Moonshot-compatible client uses Kimi models for note processing and several homework/performance operations.
 
-## State Flow
+Requests can contain raw or derived course material, questions, answers, mistakes, and chat context. Provider terms and data controls are outside this repository.
 
-Frontend state is split between:
+## Reliability and scale boundaries
 
-- Server state through TanStack Query in page/components.
-- Auth state through Supabase client.
-- App selection/session state through Zustand in `frontend/store/useStore.ts`.
+- CORS uses explicit configured origins and disallows `*` with credentialed requests.
+- Uploads are read with a byte limit and route-specific extension allowlists; document expansion, page count, and pixel count also have bounds.
+- Several provider calls are moved to a thread pool so they do not directly block the event loop, but the entire codebase has not been proven non-blocking.
+- There is no rate limiter, malware scanner, distributed queue, production observability stack, formal backup policy, or deployment topology here.
+- Tests target deterministic logic without live providers or a live database. They are not an integration, security, or AI-quality test suite.
 
-Important Zustand fields include:
-
-- `selectedClassId`
-- `selectedNoteId`
-- `practice`
-- `exam`
-- `currentQuestion`
-- `examTimer`
-- `masteryProgress`
-
-Practice index is also saved to `localStorage` in `setPracticeIndex`.
-
-## Persistence And Storage
-
-Persistent database models are defined in `backend/app/models.py`. Major categories:
-
-- Class, Note, Concept, NoteConcept.
-- PracticeSet, Question, Attempt, MistakeLog, Mastery, MasteryHistory.
-- StudentPitfall, WorkReviewSession, StepReview, TutorMemory, ChatMemory.
-- Exam, ExamInsight, ExamSession.
-- ExamPrepSyllabus, ExamPrepPlan, ExamPrepTopicPrediction, ExamPrepTask.
-- ExamPrepMaterial, ExamPrepExtractedQuestion, ExamPrepRecommendedQuestion.
-- ExamLockdownSession, ExamLockdownAttempt, ExamLockdownPitfall.
-- Flashcard, FlashcardState, FlashcardSession.
-- ConceptDependency.
-
-Original file storage strategy is unknown from the current repo. Upload routes read file bytes and store extracted text or content in database rows; no object storage integration was found.
-
-## External Integrations
-
-| Integration | Evidence in repo | Purpose |
-| --- | --- | --- |
-| Supabase Auth | `frontend/lib/supabaseClient.ts`, `backend/app/services/auth.py` | Frontend sessions and backend token verification. |
-| OpenAI API | `backend/app/services/llm.py`, `backend/app/services/file_extraction.py` | LLM study workflows and optional vision extraction. |
-| Moonshot/Kimi API | `backend/app/services/llm.py` | Referenced by `kimi_client`; exact usage depends on service code paths. |
-| PostgreSQL | `backend/app/db.py`, SQLAlchemy models, migrations | Main persistence layer. |
-| pgvector | `backend/requirements.txt`, models/service usage | Vector-related learning retrieval support. |
-
-## Security Model
-
-Supported by the repo:
-
-- Frontend requests attach Supabase Bearer tokens through `frontend/lib/auth.ts`.
-- Backend `get_current_user_id` verifies tokens with Supabase Auth unless `DEV_MODE` is enabled.
-- Many backend routes check `Class.user_id == user_id` or query by `user_id` and `class_id`.
-- Class deletion/clear logic explicitly deletes many related class-scoped records.
-
-Important cautions:
-
-- `DEV_MODE` bypasses Supabase token verification and returns `DEV_USER_ID`.
-- `backend/app/main.py` uses `allow_origins=["*"]`; production CORS restrictions are unknown.
-- Environment files are local and must not be committed.
-- Uploaded educational content, extracted text, and tutoring history can be privacy-sensitive.
-
-## Permission Model
-
-This is a web app, not a browser extension or native app. No browser extension manifest, native messaging manifest, mobile entitlement, or app store packaging file was found.
-
-Permissions are primarily application-level:
-
-- Authenticated user identity from Supabase.
-- User-owned class checks.
-- Class-scoped data access.
-
-## Error Handling Patterns
-
-Observed patterns:
-
-- Backend raises `HTTPException` for missing auth, missing class ownership, not found rows, invalid statuses, and upload/extraction problems.
-- Backend DB dependency rolls back active transactions on request errors and tries to close sessions safely.
-- Frontend `authFetch` signs out and redirects to login on 401.
-- Frontend components often show inline error messages from TanStack Query mutations.
-
-## Background Jobs And Timers
-
-Background processing exists through FastAPI `BackgroundTasks`:
-
-- Notes can queue `concept_extraction_job`.
-- Uploading notes queues concept extraction after text extraction.
-- `backend/app/main.py` resets stale note extraction statuses on startup.
-
-No external queue worker, scheduler, cron system, or task broker was found.
-
-## Platform-Specific Architecture
-
-Unknown from current repo. This appears to be a web app only.
-
-## High-Risk Areas
-
-Treat these as high-risk when making changes:
-
-- `backend/app/services/auth.py`: auth bypass/dev mode behavior.
-- `backend/app/db.py`: database engine/session lifecycle.
-- `backend/app/models.py`: schema contracts.
-- `backend/app/routers/classes.py`: class clear/delete data integrity.
-- `backend/app/routers/exam_prep.py` and `backend/app/services/exam_prep.py`: evidence-grounded recommendation rules.
-- `backend/app/routers/exam_lockdown.py` and `backend/app/services/exam_lockdown.py`: tutor context, attempts, pitfalls.
-- `backend/app/services/llm.py`: prompt formats and JSON expectations.
-- `frontend/lib/api.ts`: API contract used across the frontend.
-- `frontend/lib/auth.ts`: auth redirect and token attachment behavior.
-
-## Architecture Unknowns
-
-- Exact production database schema baseline outside included migrations.
-- Deployment target and runtime topology.
-- Object storage strategy for original uploaded files.
-- Observability/log aggregation.
-- CI/CD.
-- Automated testing strategy.
+See [Privacy and security](PRIVACY_AND_SECURITY.md) for the public-use threat model and [Setup](SETUP.md) for configuration.

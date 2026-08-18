@@ -51,7 +51,10 @@ const [questionType, setQuestionType] = useState<"open" | "mcq">("open");
     <div className="grid md:grid-cols-3 gap-4">
       <div>
         <div className="text-xs text-slate-500 mb-1">Mode</div>
-        <Select value={mode} onChange={(e) => setMode(e.target.value as any)}>
+        <Select
+          value={mode}
+          onChange={(e) => setMode(e.target.value as "standard" | "remedial")}
+        >
           <option value="standard">Standard</option>
           <option value="remedial">Remedial</option>
         </Select>
@@ -63,7 +66,7 @@ const [questionType, setQuestionType] = useState<"open" | "mcq">("open");
   <div className="text-xs text-slate-500 mb-1">Question Type</div>
   <Select
     value={questionType}
-    onChange={(e) => setQuestionType(e.target.value as any)}
+    onChange={(e) => setQuestionType(e.target.value as "open" | "mcq")}
   >
     <option value="open">Open Response</option>
     <option value="mcq">Multiple Choice</option>

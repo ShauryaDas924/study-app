@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import update
 
+from app.config import get_cors_origins
 from app.db import AsyncSessionLocal
 from app.models import Note
 from app.routers import homework
@@ -14,7 +15,7 @@ app = FastAPI(title="College AI")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

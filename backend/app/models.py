@@ -199,7 +199,8 @@ class WorkReviewSession(Base):
     filename = Column(Text, nullable=True)
     extracted_text = Column(Text, nullable=True)
     image_base64 = Column(Text, nullable=True)   # MVP storage, can move later
-    source_type = Column(Text, nullable=False, server_default=text("'image'"))  # image | pdf | text
+    # New rows use png/jpeg/pdf; legacy rows may still contain image/text.
+    source_type = Column(Text, nullable=False, server_default=text("'image'"))
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     

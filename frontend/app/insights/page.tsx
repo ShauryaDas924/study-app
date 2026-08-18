@@ -9,6 +9,12 @@ import { useStore } from "@/store/useStore";
 import { authFetch } from "@/lib/auth";
 import RequireAuth from "@/components/RequireAuth";
 
+type ExamAnalysis = {
+  id: string;
+  analysis: string;
+  created_at: string;
+};
+
 function InsightsContent(){
 
 const classId = useStore(s => s.selectedClassId)
@@ -16,7 +22,7 @@ const classId = useStore(s => s.selectedClassId)
 const [analysis,setAnalysis] = useState("")
 const [loading,setLoading] = useState(false)
 const [error,setError] = useState("")
-const [exams,setExams] = useState<any[]>([])
+const [exams,setExams] = useState<ExamAnalysis[]>([])
 useEffect(() => {
 
 if(!classId) return
@@ -27,9 +33,11 @@ const res = await authFetch(
 `/performance/insights/${classId}`
 )
 
-const data = await res.json()
+const data: unknown = await res.json()
 
-setExams(data)
+if (!Array.isArray(data)) return
+
+setExams(data as ExamAnalysis[])
 
 if(data.length > 0){
 setAnalysis(data[0].analysis)
@@ -40,10 +48,16 @@ setAnalysis(data[0].analysis)
 loadSaved()
 
 },[classId])
-async function upload(e:any){
+async function upload(e: React.ChangeEvent<HTMLInputElement>){
 
 const file = e.target.files?.[0]
 if(!file) return
+
+if (file.size > 10 * 1024 * 1024) {
+  setError("Upload must be 10 MiB or smaller")
+  e.target.value = ""
+  return
+}
 
 if(!classId){
   setError("Please select a class first")
@@ -73,16 +87,17 @@ const text = await res.text()
 throw new Error(text || "Server error")
 }
 
-const data = await res.json()
+const data = await res.json() as { analysis?: string }
+const returnedAnalysis = data.analysis
 
-if(data.analysis){
+if(typeof returnedAnalysis === "string" && returnedAnalysis){
 
-setAnalysis(data.analysis)
+setAnalysis(returnedAnalysis)
 
 setExams(prev => [
 {
 id: crypto.randomUUID(),
-analysis: data.analysis,
+analysis: returnedAnalysis,
 created_at: new Date().toISOString()
 },
 ...prev
@@ -92,10 +107,9 @@ created_at: new Date().toISOString()
 setError("No analysis returned from server.")
 }
 
-}catch(err:any){
+}catch(err: unknown){
 
-console.error(err)
-setError(err.message || "Something went wrong")
+setError(err instanceof Error ? err.message : "Something went wrong")
 
 }
 
@@ -144,7 +158,7 @@ Exam {i+1} — {new Date(exam.created_at).toLocaleDateString()}
 Upload graded exam or assignment
 </div>
 
-<input type="file" onChange={upload}/>
+<input type="file" accept=".pdf,.png,.jpg,.jpeg" onChange={upload}/>
 
 <p className="text-sm mt-2" style={{ color: "var(--text-soft)" }}>
 Upload past exams or homework with grades and corrections.

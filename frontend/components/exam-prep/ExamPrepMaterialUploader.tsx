@@ -119,7 +119,7 @@ export default function ExamPrepMaterialUploader({
       <div>
         <div className="text-sm font-semibold text-slate-900">Upload evidence</div>
         <div className="mt-1 text-xs text-slate-500">
-          Add only material you want used as evidence. Question recommendations come from extracted uploaded materials.
+          Add PDF, TXT, Markdown, or PPTX evidence. Each file must be 10 MiB or smaller.
         </div>
       </div>
 
@@ -144,7 +144,7 @@ export default function ExamPrepMaterialUploader({
           <input
             type="file"
             multiple
-            accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.ppt,.pptx"
+            accept=".pdf,.txt,.md,.pptx"
             disabled={uploadM.isPending}
             onChange={(e) => {
               setFiles(Array.from(e.target.files ?? []));

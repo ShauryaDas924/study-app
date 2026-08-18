@@ -1,4 +1,5 @@
 import os
+import logging
 from dotenv import load_dotenv
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -6,6 +7,7 @@ from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import NullPool
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -49,19 +51,19 @@ async def get_db():
     except Exception:
         try:
             await session.rollback()
-        except Exception as e:
-            print(f"⚠️ DB rollback failed during request error cleanup: {e}")
+        except Exception as exc:
+            logger.warning("db_request_rollback_failed error_type=%s", type(exc).__name__)
         raise
 
     finally:
         try:
             if session.in_transaction():
                 await session.rollback()
-        except Exception as e:
-            print(f"⚠️ DB rollback failed during session cleanup: {e}")
+        except Exception as exc:
+            logger.warning("db_session_rollback_failed error_type=%s", type(exc).__name__)
 
         try:
             await session.close()
-        except Exception as e:
+        except Exception as exc:
             # Prevent stale/closed DB connections from turning successful requests into 500s.
-            print(f"⚠️ DB session close failed; ignored stale connection: {e}")
+            logger.warning("db_session_close_failed error_type=%s", type(exc).__name__)

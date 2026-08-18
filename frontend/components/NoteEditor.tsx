@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, type NoteCreateOut } from "@/lib/api";
 import { useStore } from "@/store/useStore";
 import { Button } from "@/components/ui/Button";
 
@@ -20,66 +20,47 @@ export default function NoteEditor({
 
   const [title, setTitle] = useState("Study Note");
   const [text, setText] = useState(initialText);
-const [localError, setLocalError] = useState<string | null>(null);
-  useEffect(() => {
-  console.log("[NoteEditor] initialText changed", {
-    initialTextLength: typeof initialText === "string" ? initialText.length : -1,
-    preview: typeof initialText === "string" ? initialText.slice(0, 120) : null,
-  });
+  const [localError, setLocalError] = useState<string | null>(null);
 
-  if (typeof initialText === "string") {
-    setText(initialText);
-  }
-}, [initialText]);
+  useEffect(() => {
+    if (typeof initialText === "string") {
+      setText(initialText);
+    }
+  }, [initialText]);
 
   /**
    * Mutation now accepts optional "mode"
    * mode === undefined → normal extractor
    * mode === "math" → math extractor
    */
-   const createM = useMutation<
-    any,
+  const createM = useMutation<
+    NoteCreateOut,
     Error,
-    string | undefined
+    "math" | undefined
   >({
     mutationFn: async (mode) => {
-  const cleanText = text.trim();
-  const cleanTitle = title.trim() || "Study Note";
+      const cleanText = text.trim();
+      const cleanTitle = title.trim() || "Study Note";
 
-  console.log("[NoteEditor] clicked save", {
-    mode,
-    classId,
-    title,
-    cleanTitle,
-    textLength: text.length,
-    cleanTextLength: cleanText.length,
-    preview: cleanText.slice(0, 120),
-  });
+      setLocalError(null);
 
-  setLocalError(null);
+      if (!classId) {
+        throw new Error("Please select a class first.");
+      }
 
-  if (!classId) {
-    throw new Error("Please select a class first.");
-  }
+      if (!cleanText) {
+        throw new Error("Note text is empty.");
+      }
 
-  if (!cleanText) {
-    throw new Error("Note text is empty.");
-  }
-
-  const note = await api.createNote({
-    class_id: classId,
-    title: cleanTitle,
-    content_json: { text: cleanText },
-    auto_extract: true,
-    mode: mode ?? "normal",
-  });
-
-  console.log("[NoteEditor] /notes response", note);
-
-  return note;
-},
+      return api.createNote({
+        class_id: classId,
+        title: cleanTitle,
+        content_json: { text: cleanText },
+        auto_extract: true,
+        mode: mode ?? "normal",
+      });
+    },
     onSuccess: async (note) => {
-console.log("[NoteEditor] onSuccess", note);
       await qc.invalidateQueries({ queryKey: ["notes", classId] });
       await qc.invalidateQueries({ queryKey: ["readiness", classId] });
       setText("");
@@ -97,10 +78,9 @@ if (note?.id && classId) {
   );
 }
     },
-onError: (err) => {
-  console.error("[NoteEditor] create note failed", err);
-  setLocalError(err.message || "Failed to create note.");
-},
+    onError: (err) => {
+      setLocalError(err.message || "Failed to create note.");
+    },
   });
 
   return (
@@ -109,6 +89,7 @@ onError: (err) => {
         className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
+        maxLength={200}
       />
 
       <textarea
@@ -116,6 +97,7 @@ onError: (err) => {
         rows={8}
         value={text}
         onChange={(e) => setText(e.target.value)}
+        maxLength={2_000_000}
       />
 {localError && (
   <div className="text-sm text-red-600">

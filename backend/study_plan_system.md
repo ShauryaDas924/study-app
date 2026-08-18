@@ -1,172 +1,85 @@
-Study Plan System v1 (Adaptive Planning Engine)
+# Planning implementation note
 
-Goal
+College AI contains two planning architectures. They should not be conflated.
 
-Generate a daily study plan that:
-    •    prioritizes weak concepts
-    •    respects exam timelines
-    •    adapts to mastery + forgetting
-    •    avoids overload
-    •    feels achievable
+1. **Exam Prep/Exam Lockdown** is the current mounted Planner experience. It persists syllabus evidence, material questions, predictions, plans, tasks, recommendations, and coaching progress.
+2. **Generic daily/weekly planning** is an earlier deterministic API/component experiment. Its code remains available, but its React components are not mounted on the current `/planner` page.
 
-This system answers:
+This document describes the retained generic planner in `app/routers/plan.py` and `app/services/planner.py`. Exam Prep lives in `app/routers/exam_prep.py` and `app/services/exam_prep.py`.
 
-“What should I study today?”
+## Generic endpoint inputs
 
-⸻
+Both endpoints accept:
 
-Core Inputs
+- a user-owned `class_id`;
+- either a user/course-owned `exam_id` or an ISO exam timestamp;
+- `available_minutes_per_day` from 10 to 480, default 60.
 
-For each class:
-    •    exam_date
-    •    exam_weight (1–5 importance)
-    •    concept list
-    •    mastery per concept
-    •    last_practiced_at per concept
-    •    user available study time per day (minutes)
+The exam must be in the future and no more than 365 days away.
 
-⸻
+```text
+POST /plan/generate
+POST /plan/weekly-generate
+```
 
-Step 1 — Compute Urgency Score
+Responses are computed JSON and are not persisted as plan/task rows. With no concepts, the endpoints return an empty, shape-consistent response.
 
-For each concept:
+## Daily plan
 
-Time Factor
+For each course concept, the route supplies:
 
-days_to_exam = (exam_date - today)
+- stored mastery or `0.35`;
+- `next_review_at`;
+- total mistake-log count;
+- definition, use, and pitfalls;
+- an importance heuristic that starts at `0.5` and adds name-based boosts for `definition`, `formula`, `law`, and `theorem` (boosts can accumulate).
 
-time_factor = 1 / max(days_to_exam, 1)
+The service ranks concept blocks using:
 
-Closer exam = higher urgency.
+```text
+priority = (1 - mastery)
+         + 0.5 when the review is already due
+         + 0.15 × mistake_count
+         + base_0.5_and_name_boosts
+```
 
-⸻
+Concept block size is based on mastery:
 
-Mastery Factor
+| Stored mastery | Minutes per selected block |
+| --- | --- |
+| below `0.3` | 20 |
+| below `0.5` | 15 |
+| below `0.7` | 10 |
+| otherwise | 5 |
 
-mastery_factor = (1 - mastery_prob)
+The remaining budget becomes an exam-style practice block with up to five minutes reserved for reflection. The algorithm creates one day for each whole day before the exam, with a minimum one-day horizon.
 
-Weak concepts prioritized.
+## Weekly plan
 
-⸻
+The weekly service sorts concepts weakest first. For each day it combines concepts due by that day with up to four weak concepts, keeps at most three targets, and schedules at most two review blocks. The remaining budget is split into:
 
-Forgetting Factor
+- up to eight minutes of reflection;
+- a practice block targeted around half of the daily budget (subject to available time);
+- review time divided across selected concepts.
 
-days_since = days_since_last_practice
+It returns `weeks_left`, `days_left`, and a nested `weekly_plan`.
 
-forgetting_factor = 1 + 0.15 × days_since
+## What the generic planner does not implement
 
-Recently ignored topics rise in priority.
+An older design described a multiplicative urgency equation using time-to-exam, forgetting duration, exam weight, and fixed 60/30/10 mastery buckets. That equation is **not** implemented.
 
-⸻
+The retained planner also does not:
 
-Exam Weight Factor
+- persist completion state;
+- use the exam's `weight` field in ranking;
+- apply mastery forgetting dynamically;
+- call an AI provider;
+- learn from plan completion;
+- guarantee that its suggested work fits a student's real schedule;
+- appear in the mounted Planner UI.
 
-weight_factor = 1 + 0.25 × exam_weight
+## Current Exam Prep distinction
 
-Important exams influence plan more.
+The mounted Exam Prep flow accepts syllabus/material evidence, exam targets, weak topics, daily minutes, and intensity. It persists the resulting plan, creates concrete tasks, links recommendations to persisted extracted questions, and feeds Exam Lockdown. Model-assisted evidence parsing and prediction are uncertain, while validation, scoring inputs, record links, task creation, and status transitions are application logic.
 
-⸻
-
-Final Urgency Score
-
-urgency =
-time_factor × mastery_factor × forgetting_factor × weight_factor
-
-⸻
-
-Step 2 — Rank Concepts
-
-Sort concepts by urgency descending.
-
-Top concepts = today’s targets.
-
-⸻
-
-Step 3 — Allocate Time
-
-Assume:
-
-daily_minutes = user_available_time
-
-Divide:
-
-60% → weak/high urgency concepts
-30% → medium mastery review
-10% → strong concepts (maintenance)
-
-Example (60 min day):
-
-36 min weak
-18 min medium
-6 min strong
-
-⸻
-
-Step 4 — Convert to Tasks
-
-Each task should be concrete:
-
-✅ “Do 5 practice questions on Conditional Probability”
-✅ “Review formulas for Interest Theory (10 min)”
-✅ “Reattempt 2 incorrect questions from yesterday”
-
-NOT vague:
-❌ “Study math”
-
-⸻
-
-Step 5 — Difficulty Progression
-
-If mastery < 0.4:
-→ easier + guided questions
-
-0.4–0.7:
-→ standard exam-level
-
-0.7:
-→ harder/synthesis questions
-
-⸻
-
-Step 6 — Daily Plan Output Format
-
-Return:
-
-Today's Plan
-
-1) Concept: X  
-   Task: 5 practice questions  
-   Reason: Low mastery + exam soon  
-
-2) Concept: Y  
-   Task: Review notes + 3 questions  
-   Reason: High forgetting risk  
-
-3) Concept: Z  
-   Task: 2 challenge problems  
-   Reason: Maintain mastery
-
-Step 7 — Adaptation Rule
-
-After each attempt:
-    •    update mastery
-    •    recalc urgency
-    •    adjust tomorrow’s plan
-
-The system is alive, not static.
-
-⸻
-
-Design Philosophy
-
-The plan should feel:
-    •    realistic
-    •    personalized
-    •    achievable
-    •    motivating
-
-Students should think:
-
-“I can finish this today.”
-
-Consistency > intensity.
+Future cleanup should either remove the unmounted generic planner or reconnect it deliberately. Until then, documentation and portfolio claims should present it as retained experimental code.

@@ -37,9 +37,9 @@ function PracticeContent() {
           setPracticeIndex(savedIndex);
         }, 50);
       })
-      .catch(() => console.log("No previous practice found"));
+      .catch(() => undefined);
 
-  }, [classId]);
+  }, [classId, setPracticeIndex, setPracticeSession]);
 
   return (
     <div className="py-7 space-y-6">

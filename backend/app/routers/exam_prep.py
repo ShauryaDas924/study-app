@@ -1,9 +1,12 @@
 from datetime import datetime, timedelta, timezone
+import json
+import logging
 import time
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,25 +46,31 @@ from app.services.exam_prep import (
     parsed_summary,
     select_recommended_questions_for_topics,
 )
+from app.services.upload_safety import (
+    EXAM_PREP_UPLOAD_EXTENSIONS,
+    SYLLABUS_UPLOAD_EXTENSIONS,
+    read_upload_limited,
+)
 
 router = APIRouter(prefix="/plan/exam-prep", tags=["exam-prep"])
+logger = logging.getLogger(__name__)
 
 
 class GenerateExamPrepIn(BaseModel):
     class_id: UUID
     syllabus_id: UUID | None = None
-    exam_title: str
-    exam_date_iso: str | None = None
-    exam_date: str | None = None
-    available_days: int | None = None
-    available_minutes_per_day: int = 60
-    minutes_per_day: int | None = None
-    intensity: str = "balanced"
-    target_score: float | None = None
-    target_grade: str | None = None
+    exam_title: str = Field(min_length=1, max_length=200)
+    exam_date_iso: str | None = Field(default=None, max_length=64)
+    exam_date: str | None = Field(default=None, max_length=64)
+    available_days: int | None = Field(default=None, ge=1, le=365)
+    available_minutes_per_day: int = Field(default=60, ge=10, le=480)
+    minutes_per_day: int | None = Field(default=None, ge=10, le=480)
+    intensity: Literal["light", "balanced", "aggressive"] = "balanced"
+    target_score: float | None = Field(default=None, ge=0, le=100)
+    target_grade: str | None = Field(default=None, max_length=40)
     current_scores_json: dict | None = None
-    weak_topics: list[str] | None = None
-    selected_material_ids: list[UUID] | None = None
+    weak_topics: list[str] | None = Field(default=None, max_length=100)
+    selected_material_ids: list[UUID] | None = Field(default=None, max_length=100)
     active: bool = True
     allow_no_recommendations: bool = False
 
@@ -71,7 +80,7 @@ class CreateTasksIn(BaseModel):
 
 
 class UpdateTaskStatusIn(BaseModel):
-    status: str
+    status: Literal["pending", "done", "skipped"]
 
 
 async def ensure_class_owned(db: AsyncSession, user_id: UUID, class_id: UUID):
@@ -296,22 +305,14 @@ async def upload_material(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
+    if not material_type.strip() or len(material_type) > 50:
+        raise HTTPException(422, "material_type must be 1 to 50 characters")
+
     total_start = time.perf_counter()
-    filename = file.filename or "exam-prep-material"
     mime_type = file.content_type
 
     def log_timer(event: str, **extra):
-        print(
-            "[EXAM_PREP_UPLOAD_TIMER]",
-            {
-                "event": event,
-                "filename": filename,
-                "mime_type": mime_type,
-                "material_type": material_type,
-                "class_id": str(class_id),
-                **extra,
-            },
-        )
+        logger.info("exam_prep_upload event=%s details=%s", event, extra)
 
     log_timer("upload_start")
     try:
@@ -319,15 +320,12 @@ async def upload_material(
 
         read_start = time.perf_counter()
         log_timer("file_read_start")
-        content = await file.read()
+        filename, content = await read_upload_limited(file, EXAM_PREP_UPLOAD_EXTENSIONS)
         log_timer(
             "file_read_end",
             elapsed_sec=round(time.perf_counter() - read_start, 4),
             bytes=len(content or b""),
         )
-        if not content:
-            raise HTTPException(400, "Missing file content")
-
         normalized_type = normalize_material_type(material_type)
         row_start = time.perf_counter()
         log_timer("material_row_creation_start")
@@ -374,7 +372,7 @@ async def upload_material(
             )
         except Exception as exc:
             material.extraction_status = "failed"
-            material.parse_error = str(exc)
+            material.parse_error = "Text extraction failed for this uploaded file."
             material.raw_text = None
             material.metadata_json = {
                 **(material.metadata_json or {}),
@@ -386,7 +384,7 @@ async def upload_material(
             log_timer(
                 "text_extraction_end",
                 elapsed_sec=round(time.perf_counter() - extraction_start, 4),
-                error=str(exc)[:500],
+                error_type=type(exc).__name__,
             )
 
         commit_start = time.perf_counter()
@@ -567,12 +565,10 @@ async def upload_syllabus(
 ):
     await ensure_class_owned(db, user_id, class_id)
 
-    content = await file.read()
-    if not content:
-        raise HTTPException(400, "Missing file content")
+    filename, content = await read_upload_limited(file, SYLLABUS_UPLOAD_EXTENSIONS)
 
     try:
-        raw_text, warnings = await extract_syllabus_text(file.filename or "syllabus", content)
+        raw_text, warnings = await extract_syllabus_text(filename, content)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
@@ -588,7 +584,7 @@ async def upload_syllabus(
     syllabus = ExamPrepSyllabus(
         user_id=user_id,
         class_id=class_id,
-        filename=file.filename or "syllabus",
+        filename=filename,
         mime_type=file.content_type,
         raw_text=raw_text,
         parsed_json=parsed_json,
@@ -642,6 +638,13 @@ async def generate_exam_prep_plan(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
+    if payload.current_scores_json and len(
+        json.dumps(payload.current_scores_json).encode("utf-8")
+    ) > 100_000:
+        raise HTTPException(413, "Current score data is too large")
+    if payload.weak_topics and any(len(topic) > 200 for topic in payload.weak_topics):
+        raise HTTPException(422, "Weak-topic labels must be 200 characters or fewer")
+
     await ensure_class_owned(db, user_id, payload.class_id)
     syllabus = None
     if payload.syllabus_id:
@@ -670,19 +673,14 @@ async def generate_exam_prep_plan(
     else:
         raise HTTPException(400, "Provide exam_date_iso, exam_date, or available_days")
 
-    if exam_date <= datetime.now(timezone.utc):
+    now = datetime.now(timezone.utc)
+    if exam_date <= now:
         raise HTTPException(400, "Exam date must be in the future")
+    if exam_date > now + timedelta(days=365):
+        raise HTTPException(400, "Exam date must be within 365 days")
 
     def log_plan_debug(event: str, **extra):
-        print(
-            "[EXAM_PREP_PLAN_DEBUG]",
-            {
-                "event": event,
-                "user_id": str(user_id),
-                "class_id": str(payload.class_id),
-                **extra,
-            },
-        )
+        logger.info("exam_prep_plan event=%s diagnostics=%s", event, extra)
 
     selected_ids_provided = payload.selected_material_ids is not None
     requested_material_ids = payload.selected_material_ids or []
@@ -1163,7 +1161,7 @@ async def create_plan_tasks(
         created.append(task)
 
     await db.commit()
-    print("[exam_prep] task_creation", {"plan_id": str(plan.id), "created_count": len(created)})
+    logger.info("exam_prep_task_creation created_count=%d", len(created))
 
     task_res = await db.execute(
         select(ExamPrepTask)

@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import ClassSelector from "@/components/ClassSelector";
 import { api } from "@/lib/api";
 import { supabase } from "@/lib/supabaseClient";
+import { clearClientAccountState } from "@/lib/privacy";
 
 const items = [
   { href: "/dashboard", label: "Dashboard" },
@@ -30,6 +31,7 @@ type ActiveExtractionMeta = {
 
 function getStage(progress: number, status?: string) {
   if (status === "failed") return "Failed";
+  if (status === "cancelled") return "Cancelled";
   if (progress >= 100 || status === "completed") return "Cards ready";
   if (progress >= 90) return "Saving cards";
   if (progress >= 80) return "Generating cards";
@@ -85,10 +87,10 @@ function GlobalExtractionProgress() {
 
   const statusQ = useQuery({
     queryKey: ["global-extraction-status", meta?.noteId],
-    queryFn: () => api.getConceptExtractionStatus(meta!.noteId as any),
+    queryFn: () => api.getConceptExtractionStatus(meta!.noteId),
     enabled: !!meta?.noteId,
     refetchInterval: (query) => {
-      const data: any = query.state.data;
+      const data = query.state.data;
       const status = data?.status;
 
       if (status === "queued" || status === "running") return 3000;
@@ -103,7 +105,7 @@ function GlobalExtractionProgress() {
   useEffect(() => {
     if (!meta?.noteId) return;
 
-    if (status === "completed" || status === "failed") {
+    if (status === "completed" || status === "failed" || status === "cancelled") {
       const timeout = window.setTimeout(() => {
         localStorage.removeItem("activeExtractionMeta");
         localStorage.removeItem("activeExtractionNoteId");
@@ -168,10 +170,11 @@ function GlobalExtractionProgress() {
 export default function Navbar() {
   const path = usePathname();
   const router = useRouter();
-  const isLogin = path === "/login";
+  const isPublicPath = path === "/login" || path?.startsWith("/auth/");
 
   async function handleLogout() {
     await supabase.auth.signOut();
+    clearClientAccountState();
     router.replace("/login");
   }
 
@@ -185,7 +188,7 @@ export default function Navbar() {
     >
           <div className="mx-auto max-w-7xl px-5 py-4 flex items-center justify-between gap-5">
           <div className="flex items-center gap-4">
-            {!isLogin && (
+            {!isPublicPath && (
               <button
                 className="rounded-xl border px-3 py-2 text-sm transition"
                 style={{
@@ -240,7 +243,7 @@ export default function Navbar() {
             </div>
           </Link>
 
-        {!isLogin && <nav className="hidden md:flex items-center gap-1">
+        {!isPublicPath && <nav className="hidden md:flex items-center gap-1">
           {items.map((it) => {
             const active = path?.startsWith(it.href);
 
@@ -267,11 +270,11 @@ export default function Navbar() {
           })}
         </nav>}
 
-        {!isLogin && <div className="hidden lg:block">
+        {!isPublicPath && <div className="hidden lg:block">
           <GlobalExtractionProgress />
         </div>}
 
-          {!isLogin && (
+          {!isPublicPath && (
             <div className="flex w-[120px] items-center gap-3">
               <div className="min-w-0 flex-1">
                 <ClassSelector />
@@ -281,11 +284,11 @@ export default function Navbar() {
         </div>
       </div>
 
-      {!isLogin && <div className="lg:hidden px-5 pb-3">
+      {!isPublicPath && <div className="lg:hidden px-5 pb-3">
         <GlobalExtractionProgress />
       </div>}
 
-      {!isLogin && <div className="md:hidden px-5 pb-3 flex flex-wrap gap-2">
+      {!isPublicPath && <div className="md:hidden px-5 pb-3 flex flex-wrap gap-2">
         {items.map((it) => {
           const active = path?.startsWith(it.href);
 

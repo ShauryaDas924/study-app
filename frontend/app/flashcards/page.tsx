@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "@/store/useStore";
 import { authFetch } from "@/lib/auth";
 import RequireAuth from "@/components/RequireAuth";
@@ -17,6 +17,11 @@ type ApiFlashcard = {
   question: string;
   answer: string;
   confidence?: number;
+};
+
+type NoteSummary = {
+  id: string;
+  title: string;
 };
 
 type Mode =
@@ -81,7 +86,7 @@ function FlashcardsContent() {
   const noteId = useStore((s) => s.selectedNoteId);
   const setSelectedNoteId = useStore((s) => s.setSelectedNoteId);
 
-  const [notes, setNotes] = useState<any[]>([]);
+  const [notes, setNotes] = useState<NoteSummary[]>([]);
   const [cards, setCards] = useState<Card[]>([]);
   const [i, setI] = useState(0);
   const [show, setShow] = useState(false);
@@ -125,8 +130,7 @@ const skipNextSaveRef = useRef(false);
         if (arr.length && !noteId) {
           setSelectedNoteId(arr[0].id);
         }
-      } catch (e) {
-        console.error(e);
+      } catch {
       }
     }
 
@@ -160,9 +164,7 @@ const skipNextSaveRef = useRef(false);
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
-  }).catch((e) => {
-    console.error("Failed to save backend session", e);
-  });
+  }).catch(() => undefined);
 }, [
   noteId,
   loadedDeckNoteId,
@@ -174,19 +176,6 @@ const skipNextSaveRef = useRef(false);
   hardPile,
   mediumPile,
 ]);
-
-  useEffect(() => {
-    if (!classId || !noteId) return;
-    if (!sessionKey) return;
-
-    if (lastLoadedNoteId.current === noteId) return;
-    lastLoadedNoteId.current = noteId;
-
-    setLoadedDeckNoteId(null);
-    setIsRestoringSession(true);
-
-    void loadFreshDeck(noteId);
-  }, [classId, noteId, sessionKey]);
 
   useEffect(() => {
     if (!noteId) return;
@@ -210,7 +199,7 @@ const skipNextSaveRef = useRef(false);
     };
   }, []);
 
-  async function loadFreshDeck(nid: string) {
+  const loadFreshDeck = useCallback(async (nid: string) => {
     setLoading(true);
     setError(null);
 
@@ -311,16 +300,25 @@ const skipNextSaveRef = useRef(false);
         mediumPile: [],
         mode: "normal",
       });
-    } catch (err: any) {
-      console.error(err);
+    } catch (err: unknown) {
       setCards([]);
-      setError(err?.message ?? "Failed to load flashcards");
+      setError(err instanceof Error ? err.message : "Failed to load flashcards");
       setLoadedDeckNoteId(null);
       setIsRestoringSession(false);
     } finally {
       setLoading(false);
     }
-  }
+  }, [sessionKey]);
+
+  useEffect(() => {
+    if (!classId || !noteId || !sessionKey) return;
+    if (lastLoadedNoteId.current === noteId) return;
+
+    lastLoadedNoteId.current = noteId;
+    setLoadedDeckNoteId(null);
+    setIsRestoringSession(true);
+    void loadFreshDeck(noteId);
+  }, [classId, loadFreshDeck, noteId, sessionKey]);
 
   function reshuffleRemaining() {
     const remaining = cards.slice(i);
@@ -450,8 +448,7 @@ const skipNextSaveRef = useRef(false);
         medium_ids: [],
       }),
     });
-  } catch (e) {
-    console.error("Failed to reset backend session", e);
+  } catch {
   }
 }
 
@@ -600,8 +597,7 @@ const skipNextSaveRef = useRef(false);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error("CSV export error:", err);
+    } catch {
     }
   }
 

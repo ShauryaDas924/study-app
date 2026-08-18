@@ -1,12 +1,11 @@
 
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useState, useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type UUID } from "@/lib/api";
 import { useStore } from "@/store/useStore";
 import { Card, CardHeader } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
 import UploadNotes from "@/components/UploadNotes";
 import NoteEditor from "@/components/NoteEditor";
 import { authFetch } from "@/lib/auth";
@@ -500,7 +499,19 @@ function formatConceptName(name?: string) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-function getConceptTone(concept: any, index: number) {
+type ConceptPreview = {
+  id?: UUID;
+  name?: string;
+  description?: string | null;
+  evidence?: string | null;
+  summary?: string | null;
+};
+
+function getNoteText(content?: Record<string, unknown>) {
+  return typeof content?.text === "string" ? content.text : "";
+}
+
+function getConceptTone(concept: ConceptPreview, index: number) {
   const text = `${concept?.name ?? ""} ${concept?.description ?? ""}`.toLowerCase();
 
   if (
@@ -630,7 +641,7 @@ function getConceptTone(concept: any, index: number) {
   return fallbacks[index % fallbacks.length];
 }
 
-function SavedConceptsPreview({ concepts }: { concepts: any[] }) {
+function SavedConceptsPreview({ concepts }: { concepts: ConceptPreview[] }) {
   if (concepts.length === 0) {
     return (
       <div
@@ -694,7 +705,7 @@ function SavedConceptsPreview({ concepts }: { concepts: any[] }) {
       </div>
 
       <div className="p-5 grid md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {concepts.map((concept: any, index: number) => {
+        {concepts.map((concept, index) => {
           const tone = getConceptTone(concept, index);
           const title = formatConceptName(concept.name);
           const description =
@@ -796,18 +807,14 @@ function NotesContent() {
   const qc = useQueryClient();
 
   const [uploadedText, setUploadedText] = useState("");
-  const [flashcards, setFlashcards] = useState<any[]>([]);
-  const [dbFlashcards, setDbFlashcards] = useState<any[]>([]);
-  const [concepts, setConcepts] = useState<any[]>([]);
+  const [concepts, setConcepts] = useState<ConceptPreview[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<UUID | null>(null);
 
-  /* ===============================
-     LOAD LOCAL FLASHCARDS
-  =============================== */
   useEffect(() => {
-    const saved = localStorage.getItem("flashcards");
-    if (saved) setFlashcards(JSON.parse(saved));
-  }, []);
+    setSelectedNoteId(null);
+    setUploadedText("");
+    setConcepts([]);
+  }, [classId]);
 
   /* ===============================
      NOTES QUERY
@@ -832,7 +839,7 @@ useEffect(() => {
       if (
         meta?.classId === classId &&
         meta?.noteId &&
-        notesQ.data.some((n: any) => n.id === meta.noteId)
+        notesQ.data.some((n) => n.id === meta.noteId)
       ) {
         setSelectedNoteId(meta.noteId);
         return;
@@ -862,14 +869,28 @@ useEffect(() => {
     queryFn: () => api.getConceptExtractionStatus(selectedNoteId as UUID),
     enabled: !!selectedNoteId,
     refetchInterval: (query) => {
-      const data: any = query.state.data;
+      const data = query.state.data;
       const status = data?.status;
     if (status === "queued" || status === "running") return 8000;
       return false;
     },
   });
+
+  const fetchConcepts = useCallback(() => {
+    if (!classId) return Promise.resolve();
+
+    return authFetch(`/notes/concepts/by-class/${classId}`, {
+      credentials: "include",
+    })
+      .then((response) => response.json())
+      .then((data: unknown) => {
+        setConcepts(Array.isArray(data) ? (data as ConceptPreview[]) : []);
+      })
+      .catch(() => setConcepts([]));
+  }, [classId]);
+
 useEffect(() => {
-  const text = (noteQ.data?.content_json as any)?.text;
+  const text = getNoteText(noteQ.data?.content_json);
 
   if (typeof text === "string") {
     setUploadedText(text);
@@ -885,73 +906,26 @@ useEffect(() => {
       fetchConcepts();
     }
 
-  if (status === "failed") {
+  if (status === "failed" || status === "cancelled") {
     localStorage.removeItem("activeExtractionMeta");
     localStorage.removeItem("activeExtractionNoteId");
   }
-}, [extractionStatusQ.data?.status, classId, qc, selectedNoteId]);
-  /* ===============================
-     EXTRACT CONCEPTS
-  =============================== */
-    const extractM = useMutation({
-    mutationFn: ({ noteId, mode }: { noteId: UUID; mode?: string }) =>
-      api.startConceptExtraction(noteId, mode),
-  });
+}, [extractionStatusQ.data?.status, classId, fetchConcepts, qc, selectedNoteId]);
 
-  /* ===============================
-     FETCH CONCEPTS
-  =============================== */
-  const fetchConcepts = () => {
-    if (!classId) return;
-
-    authFetch(`/notes/concepts/by-class/${classId}`, {
-      credentials: "include",
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        if (Array.isArray(data)) setConcepts(data);
-        else setConcepts([]);
-      })
-      .catch(() => setConcepts([]));
-  };
-
-  useEffect(fetchConcepts, [classId]);
-
-  /* ===============================
-     FETCH DB FLASHCARDS
-  =============================== */
-  const fetchDBFlashcards = () => {
-    if (!classId) return;
-
-    authFetch(`/notes/flashcards/by-class/${classId}`, {
-      credentials: "include",
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        if (Array.isArray(data)) setDbFlashcards(data);
-      });
-  };
-
-
-  /* ===============================
-     MERGE + DEDUPE FLASHCARDS
-  =============================== */
-  const allFlashcards = useMemo(() => {
-    const map = new Map();
-
-    [...dbFlashcards, ...flashcards].forEach((fc) => {
-      map.set(fc.question, fc);
-    });
-
-    return Array.from(map.values());
-  }, [dbFlashcards, flashcards]);
+  useEffect(() => {
+    void fetchConcepts();
+  }, [fetchConcepts]);
 
   const selected = useMemo(() => selectedNoteId, [selectedNoteId]);
   const extractionStatus = extractionStatusQ.data?.status ?? "idle";
   const extractionProgress = extractionStatusQ.data?.progress ?? 0;
   const extractionError = extractionStatusQ.data?.error ?? null;
   const extractionStage =
-    extractionProgress >= 100
+    extractionStatus === "failed"
+      ? "Failed"
+      : extractionStatus === "cancelled"
+      ? "Cancelled"
+      : extractionProgress >= 100
       ? "Completed"
       : extractionProgress >= 90
       ? "Saving flashcards"
@@ -992,14 +966,7 @@ useEffect(() => {
 
         <UploadNotes
   onExtracted={(text, fc) => {
-    console.log("[NotesPage] UploadNotes onExtracted", {
-      textLength: typeof text === "string" ? text.length : -1,
-      preview: typeof text === "string" ? text.slice(0, 120) : null,
-      flashcards: Array.isArray(fc) ? fc.length : -1,
-    });
-
     setUploadedText(text);
-    setFlashcards(fc);
     localStorage.setItem("flashcards", JSON.stringify(fc));
   }}
   onCreatedNote={async (noteId) => {
@@ -1083,7 +1050,7 @@ useEffect(() => {
           <div>Loading…</div>
         ) : (
           <>
-             <NotePreview text={(noteQ.data?.content_json as any)?.text} />
+             <NotePreview text={getNoteText(noteQ.data?.content_json)} />
 
             <div className="mt-4 space-y-2">
               <div className="flex items-center justify-between text-sm">
@@ -1127,6 +1094,12 @@ useEffect(() => {
               {extractionStatus === "failed" && extractionError && (
                 <div className="text-xs" style={{ color: "var(--accent-pink-strong)" }}>
   Extraction failed: {String(extractionError)}
+</div>
+              )}
+
+              {extractionStatus === "cancelled" && (
+                <div className="text-xs" style={{ color: "var(--text-soft)" }}>
+  Extraction was cancelled.
 </div>
               )}
             </div>
