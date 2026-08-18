@@ -6,10 +6,15 @@ from app.services.kimi import KIMI_MODEL, build_kimi_user_content
 
 
 def test_kimi_content_attaches_images_but_not_pdf_data() -> None:
-    image_content = build_kimi_user_content(
+    png_content = build_kimi_user_content(
         "Review this work.",
         mime_type="image/png",
         media_base64="IMAGE_DATA",
+    )
+    jpeg_content = build_kimi_user_content(
+        "Review this work.",
+        mime_type="image/jpeg",
+        media_base64="JPEG_DATA",
     )
     pdf_content = build_kimi_user_content(
         "Extracted PDF text.",
@@ -17,13 +22,15 @@ def test_kimi_content_attaches_images_but_not_pdf_data() -> None:
         media_base64="PDF_DATA",
     )
 
-    assert isinstance(image_content, list)
-    assert image_content[1]["image_url"]["url"] == "data:image/png;base64,IMAGE_DATA"
+    assert isinstance(png_content, list)
+    assert png_content[1]["image_url"]["url"] == "data:image/png;base64,IMAGE_DATA"
+    assert isinstance(jpeg_content, list)
+    assert jpeg_content[1]["image_url"]["url"] == "data:image/jpeg;base64,JPEG_DATA"
     assert pdf_content == "Extracted PDF text."
     assert "PDF_DATA" not in pdf_content
 
 
-def test_kimi_k3_uses_final_content_without_exposing_reasoning(
+def test_kimi_k26_uses_default_thinking_without_exposing_reasoning(
     monkeypatch,
     caplog,
 ) -> None:
@@ -49,9 +56,10 @@ def test_kimi_k3_uses_final_content_without_exposing_reasoning(
 
     result = asyncio.run(llm.refine_notes("Original lecture text."))
 
-    assert KIMI_MODEL == "kimi-k3"
+    assert KIMI_MODEL == "kimi-k2.6"
     assert captured_request["model"] == KIMI_MODEL
     assert "thinking" not in captured_request
+    assert "extra_body" not in captured_request
     assert "reasoning_effort" not in captured_request
     assert "temperature" not in captured_request
     assert result == "Final notes"

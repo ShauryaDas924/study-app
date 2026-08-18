@@ -1,7 +1,7 @@
 from typing import Any
 
 
-KIMI_MODEL = "kimi-k3"
+KIMI_MODEL = "kimi-k2.6"
 KIMI_IMAGE_MIME_TYPES = frozenset({"image/jpeg", "image/png"})
 
 
