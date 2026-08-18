@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -9,6 +10,7 @@ from uuid import UUID
 from app.services.file_extraction import extract_text, extract_text_with_source
 from app.services.llm import openai_chat_create, safe_json_loads
 
+logger = logging.getLogger(__name__)
 
 MIN_SYLLABUS_CHARS = 30
 SHORT_SYLLABUS_CHARS = 240
@@ -753,9 +755,10 @@ async def extract_syllabus_text(filename: str, file_bytes: bytes) -> tuple[str, 
         warnings.append("The extracted syllabus text is very short, so confidence may be low.")
 
     elapsed = time.perf_counter() - start
-    print(
-        "[exam_prep] syllabus_extraction",
-        {"filename": filename, "chars": len(raw_text), "elapsed_sec": round(elapsed, 2)},
+    logger.info(
+        "exam_prep_syllabus_extraction chars=%d elapsed_sec=%.2f",
+        len(raw_text),
+        elapsed,
     )
     return raw_text, warnings
 
@@ -958,20 +961,20 @@ async def parse_syllabus(raw_text: str) -> tuple[dict, str, str | None]:
         status = "completed"
         error = None
     except Exception as exc:
-        parsed = fallback_parse_syllabus(raw_text, str(exc))
+        fallback_warning = "Automated syllabus parsing failed; deterministic fallback parsing was used."
+        logger.warning("exam_prep_syllabus_parse_fallback error_type=%s", type(exc).__name__)
+        parsed = fallback_parse_syllabus(raw_text, fallback_warning)
         status = "fallback"
-        error = str(exc)
+        error = "Automated syllabus parsing failed; fallback parsing was used."
 
     elapsed = time.perf_counter() - start
-    print(
-        "[exam_prep] syllabus_parse",
-        {
-            "status": status,
-            "topics": len(parsed.get("study_topics") or []) + len(parsed.get("schedule_topics") or []),
-            "exam_dates": len(parsed.get("exam_dates") or []),
-            "ignored_metadata": len(parsed.get("ignored_metadata") or []),
-            "elapsed_sec": round(elapsed, 2),
-        },
+    logger.info(
+        "exam_prep_syllabus_parse status=%s topics=%d exam_dates=%d ignored_metadata=%d elapsed_sec=%.2f",
+        status,
+        len(parsed.get("study_topics") or []) + len(parsed.get("schedule_topics") or []),
+        len(parsed.get("exam_dates") or []),
+        len(parsed.get("ignored_metadata") or []),
+        elapsed,
     )
     return parsed, status, error
 
@@ -1345,15 +1348,13 @@ def build_topic_predictions(parsed_json: dict, raw_text: str, concepts: list, ma
         warnings.append("Only a few clear study topics were found. Upload notes or a review guide for better planning.")
 
     elapsed = time.perf_counter() - start
-    print(
-        "[exam_prep] topic_scoring",
-        {
-            "concepts_loaded": len(concepts),
-            "topics": len(predictions),
-            "matched_concepts": matched_concept_count,
-            "ignored_metadata": len(parsed_json.get("ignored_metadata") or []),
-            "elapsed_sec": round(elapsed, 2),
-        },
+    logger.info(
+        "exam_prep_topic_scoring concepts=%d topics=%d matched=%d ignored_metadata=%d elapsed_sec=%.2f",
+        len(concepts),
+        len(predictions),
+        matched_concept_count,
+        len(parsed_json.get("ignored_metadata") or []),
+        elapsed,
     )
     return predictions[:30], warnings
 
@@ -1503,9 +1504,11 @@ def build_plan_days(
     starts_on = datetime.combine(today, dt_time.min, tzinfo=timezone.utc)
     ends_on = datetime.combine(today + timedelta(days=total_days - 1), dt_time.max, tzinfo=timezone.utc)
     elapsed = time.perf_counter() - start
-    print(
-        "[exam_prep] plan_generation",
-        {"days": len(plan_days), "topics": len(topics), "elapsed_sec": round(elapsed, 2)},
+    logger.info(
+        "exam_prep_plan_generation days=%d topics=%d elapsed_sec=%.2f",
+        len(plan_days),
+        len(topics),
+        elapsed,
     )
     return plan_days, warnings, starts_on, ends_on
 

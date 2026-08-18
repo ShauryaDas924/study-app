@@ -1,214 +1,154 @@
 # College AI
 
-College AI is a full-stack AI study app for managing college course materials, extracting concepts from notes, generating practice, tracking mastery, planning study work, and running an evidence-based Exam Lockdown tutoring flow.
+College AI is a full-stack study workspace that turns class material into structured concepts, practice, feedback, and exam-preparation plans. I built it to explore a practical question: how can an AI-assisted product preserve source context and useful learning state instead of acting like a stateless chatbot?
 
-The project is for students who want one place to organize class-specific notes, homework help, practice questions, flashcards, analytics, and exam prep. It is also useful as a portfolio project because it combines a Next.js frontend, FastAPI backend, Postgres persistence, Supabase authentication, and several LLM-backed learning workflows.
+> **Status:** Archived/discontinued portfolio project. The repository contains a functional MVP and is being prepared as proof of engineering work; it is not operated as a production service or under active commercial development.
 
-## What The Project Does
+## What it demonstrates
 
-- Lets users create and select classes/courses.
-- Stores notes by class and supports AI concept extraction from those notes.
-- Generates concepts, flashcards, practice questions, remedial practice, and learning analytics.
-- Provides homework help, step review, chat memory, and stored student pitfalls.
-- Tracks attempts, mistakes, mastery, exam sessions, flashcard state, and planner tasks.
-- Provides a Planner page for exam prep.
-- Provides an Exam Lockdown workflow where uploaded course materials are used as evidence for an exam plan and Tutor can coach recommended questions.
+- Course-scoped notes, uploads, concepts, flashcards, practice, tutoring, analytics, and destructive data controls.
+- Supabase session handling with backend bearer-token validation and user/class ownership checks.
+- Async FastAPI and SQLAlchemy data flows across a substantial PostgreSQL model.
+- OpenAI and Moonshot/Kimi integrations; selected structured-output paths include repair and validation.
+- Embedding storage in 1,536-dimensional `pgvector` columns. Retrieval currently loads the class's concepts and computes cosine similarity in application code with NumPy; it does not use a database KNN query.
+- A mounted Exam Prep/Exam Lockdown workflow that stores extracted source questions, ranks recommendations, creates a schedule, and coaches against the selected source-linked question.
+- Process-local background concept extraction with persisted progress/failure state.
 
-## Main Features
+## Product flow
 
-| Area | Summary | Key files |
-| --- | --- | --- |
-| Authentication | Supabase session on the frontend and backend Bearer-token verification. | `frontend/lib/auth.ts`, `frontend/lib/supabaseClient.ts`, `backend/app/services/auth.py` |
-| Classes | User-owned class creation, listing, clearing, and deletion. | `backend/app/routers/classes.py`, `frontend/app/courses/page.tsx` |
-| Notes | Notes can be created manually or from uploads. Concept extraction runs as a background task. | `backend/app/routers/notes.py`, `backend/app/routers/uploads.py`, `backend/app/jobs/concept_jobs.py`, `frontend/app/notes/page.tsx` |
-| Concepts and flashcards | Extracted concepts support flashcards and review state. | `backend/app/routers/concepts.py`, `frontend/app/flashcards/page.tsx` |
-| Practice | Practice generation, remedial practice, attempts, step hints, step checks, exam sessions, readiness, and analytics. | `backend/app/routers/practice.py`, `frontend/app/practice/page.tsx` |
-| Tutor and homework | Normal Tutor, homework help, work review, step review, chat memory, and pitfalls. | `backend/app/routers/homework.py`, `frontend/app/tutor/page.tsx`, `frontend/components/TutorChat.tsx` |
-| Planner | Daily and weekly plan generation plus exam prep planner UI. | `backend/app/routers/plan.py`, `frontend/app/planner/page.tsx` |
-| Exam Lockdown | Evidence upload, question extraction, plan generation, recommended questions, tutor coaching, attempts, progress, and pitfalls. | `backend/app/routers/exam_prep.py`, `backend/app/routers/exam_lockdown.py`, `frontend/components/exam-prep/`, `frontend/components/exam-lockdown/` |
-| Analytics | Mistake heatmap, weakness map, tag frequency, readiness, and knowledge graph views. | `backend/app/routers/performance.py`, `frontend/app/analytics/page.tsx`, `frontend/app/insights/page.tsx` |
+1. Create a course and add notes or supported files.
+2. Extract concepts and flashcards from the material.
+3. Generate practice for weak concepts and record attempts, confidence, mistakes, and mastery.
+4. Use tutoring, work review, analytics, and knowledge-map views to inspect gaps.
+5. Upload a syllabus and exam materials, then create an evidence-based Exam Prep plan and enter Exam Lockdown coaching.
 
-## Tech Stack
+The Planner page exposes the Exam Prep planner. Older daily and weekly planning endpoints and React components remain in the repository for inspection, but they are not mounted in the current Planner UI.
 
-### Frontend
+## Architecture
 
-- Next.js 16
-- React 19
-- TypeScript
-- Tailwind CSS
-- TanStack Query
-- Zustand
-- Supabase JavaScript client
-- React Markdown, KaTeX, React Force Graph, XY Flow
+```mermaid
+flowchart LR
+    UI["Next.js 16 / React 19 / TypeScript"] -->|"Supabase access token"| API["FastAPI API"]
+    UI --> AUTH["Supabase Auth"]
+    API --> DB["PostgreSQL / async SQLAlchemy"]
+    DB --- VECTOR["pgvector embedding columns"]
+    API --> OPENAI["OpenAI API"]
+    API --> KIMI["Moonshot / Kimi API"]
+    API -. "schedules" .-> JOB["FastAPI BackgroundTasks\nprocess-local status + semaphore"]
+    JOB --> DB
+    JOB --> OPENAI
+    JOB --> KIMI
+```
 
-### Backend
+The browser sends a Supabase bearer token to FastAPI. The API verifies that token with Supabase and scopes database queries to the resulting user ID. Notes, generated artifacts, attempts, mastery, plans, and source references are persisted in PostgreSQL. Some draft study state—such as blurting/mind-map boards and homework chat display history—is stored in browser `localStorage` instead.
 
-- FastAPI
-- SQLAlchemy async
-- asyncpg
-- PostgreSQL
-- pgvector
-- Pydantic
-- OpenAI Python SDK
-- PyMuPDF, Pillow, python-pptx for file extraction
-- json-repair, jsonschema, python-dateutil, httpx
+See [Architecture](docs/ARCHITECTURE.md) for the main data paths and trust boundaries.
 
-## Quick Start
+## Interesting engineering problems
 
-The repository has separate `frontend/` and `backend/` apps.
+- **Deterministic boundaries around model output.** Selected structured-response paths normalize, repair, schema-check, and convert provider output into persistent domain records before downstream use; conversational paths can still return model text directly.
+- **Grounded exam coaching.** Uploaded material is converted into persisted questions with source metadata. Recommendations point to those records, so the lockdown tutor can load the exact planned question rather than inventing an unrelated one.
+- **Staged extraction without queue infrastructure.** Long concept extraction runs after the request, is limited by a process-local semaphore, and records progress and terminal state in the note row. A restart marks interrupted work idle instead of pretending it completed.
+- **Interconnected learning state.** Attempts feed mistake logs, tutor memory, mastery history, review dates, remedial practice, readiness, and analytics.
+- **User isolation across related records.** High-value reads, writes, and class deletion flows carry the authenticated user and class boundaries through multi-table operations.
+- **Honest retrieval tradeoff.** PostgreSQL stores pgvector-compatible embeddings, while the MVP performs small per-class cosine ranking in Python. That is simple to inspect, but it is not the approach for a large corpus.
 
-### 1. Backend
+## Stack
+
+| Layer | Technologies |
+| --- | --- |
+| Frontend | TypeScript 5, Next.js 16, React 19.2, Tailwind CSS 3.4, TanStack Query 5, Zustand 5 |
+| Backend | Python, FastAPI, Pydantic, async SQLAlchemy 2, asyncpg |
+| Data | PostgreSQL, JSONB, pgvector columns |
+| AI and documents | OpenAI SDK, Moonshot/Kimi-compatible API, NumPy, PyMuPDF, Pillow, python-pptx, JSON repair/schema validation |
+| Identity | Supabase Auth |
+| Quality | pytest, ESLint, TypeScript, GitHub Actions |
+
+## Local setup
+
+Use Python 3.12 and Node.js 22 to match CI.
 
 ```bash
-cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+git clone <your-fork-or-local-copy>
+
+cd study-app/backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+cp .env.example .env
+# Edit .env with your own database, Supabase, and AI-provider values.
 uvicorn app.main:app --reload
 ```
 
-The backend reads environment variables through `python-dotenv`.
-
-Required or referenced backend variables found in the repo:
+In another terminal:
 
 ```bash
-DATABASE_URL=postgresql+asyncpg://...
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=...
-OPENAI_API_KEY=...
-MOONSHOT_API_KEY=...
-DEV_MODE=false
-DEV_USER_ID=00000000-0000-0000-0000-000000000001
-```
-
-Notes:
-
-- `DATABASE_URL` is required by `backend/app/db.py`.
-- `SUPABASE_URL` and `SUPABASE_ANON_KEY` are required by backend auth unless `DEV_MODE` is enabled.
-- `OPENAI_API_KEY` is used by LLM and file-extraction services.
-- `MOONSHOT_API_KEY` is referenced by `backend/app/services/llm.py`.
-- No safe root `.env.example` file exists in the repo at the time of writing.
-
-### 2. Frontend
-
-```bash
-cd frontend
-npm install
+cd study-app/frontend
+npm ci
+cp .env.example .env.local
+# Edit .env.local with your own public Supabase values.
 npm run dev
 ```
 
-The frontend expects:
+Open `http://localhost:3000`; the API health check is `http://localhost:8000/health`.
 
-```bash
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=...
-```
+Important setup caveat: this repository contains only the three incremental Exam Prep/Lockdown SQL migrations, not a complete base-schema migration. It cannot bootstrap a blank database from repository files alone. You need a compatible existing schema or an owner-supplied baseline before applying the migrations in `backend/migrations/`. See [Setup](docs/SETUP.md) for environment variables, development auth, upload limits, and database details.
 
-`NEXT_PUBLIC_API_BASE_URL` defaults to `http://localhost:8000` in `frontend/lib/auth.ts`.
+## Tests and validation
 
-## Basic Usage
-
-1. Start the backend.
-2. Start the frontend.
-3. Sign in through the Supabase-backed frontend flow.
-4. Create or select a class.
-5. Add notes or upload course material.
-6. Extract concepts and generate practice.
-7. Use Tutor or Homework flows for help.
-8. Use Planner and Exam Lockdown for evidence-based exam preparation.
-
-## Development Commands
-
-Frontend commands are defined in `frontend/package.json`:
-
-```bash
-cd frontend
-npm run dev
-npm run lint
-npm run build
-npm run start
-```
-
-Backend commands are not defined in a package script file. The supported local run command follows the FastAPI app layout:
+The automated tests are deliberately provider-free and focus on deterministic security and learning logic.
 
 ```bash
 cd backend
-uvicorn app.main:app --reload
-```
+python -m compileall -q app
+pytest -q
 
-## Testing Commands
-
-No dedicated automated test command or test suite was found in the current repository.
-
-Recommended validation from current repo support:
-
-```bash
-cd frontend
+cd ../frontend
+npm ci
 npm run lint
+npm run typecheck
 npm run build
 ```
 
-Backend test setup is unknown from the current repo. There is no `pytest.ini`, test folder, or test dependency list visible.
+`.github/workflows/ci.yml` runs these backend and frontend checks on pushes and pull requests. It does not deploy, call AI providers, authenticate against Supabase, or run database integration tests.
 
-## Build And Release Commands
+## Privacy and security notes
 
-Frontend build:
+This code handles uploaded course material, answers, chat context, and derived learning data. Depending on the feature, content can be sent to the configured OpenAI or Moonshot/Kimi account. Do not use real student records or confidential course material unless you have evaluated those providers and your own obligations.
 
-```bash
-cd frontend
-npm run build
-```
+The MVP includes bearer-token validation, explicit CORS origins, user/class scoping, bounded uploads, extension allowlists, safe filename handling, and server-side grading for multiple-choice attempts. It also has important limits:
 
-Frontend production start after a successful build:
+- No repository-proven rate limiting, malware scanner, formal retention policy, penetration test, production RLS policy, or compliance program.
+- `localStorage` content is readable by scripts running on the same origin and is not covered by server-side class deletion. Sign-out clears known app-owned study-state keys in the current browser, not data on other profiles or devices.
+- Class clear/delete endpoints remove the application's known server-side class records, but there is no account-level erasure workflow or independently verified retention guarantee.
+- Background extraction is process-local and non-durable. It has no Redis, external worker, retry queue, or multi-instance coordination.
+- Some provider calls are isolated from the event loop, but the codebase is not a fully audited non-blocking system.
 
-```bash
-cd frontend
-npm run start
-```
+Read [Privacy and security](docs/PRIVACY_AND_SECURITY.md) before running the app with real data.
 
-Backend deployment/release commands are unknown from the current repo. No Dockerfile, CI workflow, deployment manifest, or process file was found.
+## Known limitations
 
-## Project Structure Summary
-
-```text
-backend/
-  app/
-    main.py                 FastAPI entry point and router registration
-    db.py                   async SQLAlchemy engine/session setup
-    models.py               SQLAlchemy data model
-    routers/                API route modules
-    services/               auth, LLM, file extraction, planner, mastery, exam services
-    jobs/                   background concept extraction job logic
-  migrations/               SQL migrations for exam prep and lockdown tables
-  *.md                      learning-system specs and prompt notes
-
-frontend/
-  app/                      Next.js route pages
-  components/               UI and feature components
-  lib/                      API client, auth helpers, Supabase client
-  store/                    Zustand app state
-  styles/                   global CSS
-```
-
-See [docs/FILE_MAP.md](docs/FILE_MAP.md) for a detailed map.
+- Archived portfolio MVP; no deployment configuration or production environment is included.
+- Fresh database setup is incomplete because the base migration is absent.
+- AI quality has no formal benchmark, and generated output can be incomplete or wrong.
+- Open-response correctness is self-assessed; time spent is recorded but does not affect the current mastery formula.
+- Readiness averages stored mastery values and does not apply forgetting decay at read time.
+- Daily/weekly planner code is not mounted in the current UI; Exam Prep/Lockdown is the live planning path.
+- Application-side vector ranking and process-local jobs are suitable only for the MVP's small scope.
 
 ## Documentation
 
-- [AI_CONTEXT.md](AI_CONTEXT.md)
-- [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md)
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/SETUP.md](docs/SETUP.md)
-- [docs/DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md)
-- [docs/FEATURES.md](docs/FEATURES.md)
-- [docs/FILE_MAP.md](docs/FILE_MAP.md)
-- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-- [docs/CHANGELOG_STARTER.md](docs/CHANGELOG_STARTER.md)
-
-## Current Status
-
-In development / functional MVP. The codebase contains substantial app functionality, including Exam Lockdown, but production readiness is unknown from the current repo because automated tests, CI, deployment configuration, privacy policy, and security documentation are not present.
+- [Project overview](docs/PROJECT_OVERVIEW.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Setup](docs/SETUP.md)
+- [Features and status](docs/FEATURES.md)
+- [Development guide](docs/DEVELOPMENT_GUIDE.md)
+- [Privacy and security](docs/PRIVACY_AND_SECURITY.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Mastery implementation note](backend/mastery_system.md)
+- [Planning implementation note](backend/study_plan_system.md)
+- [Learning loop](backend/learning_loop.md)
 
 ## License
 
-License: Unknown from current repo.
+No license has currently been granted. Public visibility permits inspection of the repository but should not be interpreted as permission to copy, modify, or redistribute it. The owner can choose a license later.

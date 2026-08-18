@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { getSafeInternalPath } from "@/lib/navigation";
+import { clearClientAccountState } from "@/lib/privacy";
 
 function getOAuthError() {
   const search = new URLSearchParams(window.location.search);
@@ -14,6 +16,11 @@ function getOAuthError() {
     hash.get("error_description") ||
     hash.get("error")
   );
+}
+
+function getSafeNextPath() {
+  const raw = new URLSearchParams(window.location.search).get("next");
+  return getSafeInternalPath(raw, window.location.origin);
 }
 
 export default function AuthCallbackPage() {
@@ -53,7 +60,8 @@ export default function AuthCallbackPage() {
 
       if (data.session) {
         setMessage("Login complete. Redirecting...");
-        router.replace("/dashboard");
+        clearClientAccountState();
+        router.replace(getSafeNextPath());
         return;
       }
 

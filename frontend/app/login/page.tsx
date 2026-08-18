@@ -3,14 +3,14 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { getSafeInternalPath } from "@/lib/navigation";
+import { clearClientAccountState } from "@/lib/privacy";
 
 function getSafeNextPath() {
   if (typeof window === "undefined") return "/dashboard";
 
   const raw = new URLSearchParams(window.location.search).get("next");
-  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/dashboard";
-
-  return raw;
+  return getSafeInternalPath(raw, window.location.origin);
 }
 
 function getInitialMessage() {
@@ -43,6 +43,7 @@ export default function LoginPage() {
       return;
     }
 
+    clearClientAccountState();
     router.replace(next);
   }
 
@@ -72,7 +73,7 @@ export default function LoginPage() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`,
       },
     });
 

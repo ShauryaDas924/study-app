@@ -1,296 +1,120 @@
 # Troubleshooting
 
-This guide covers problems that can be inferred from the current repository.
+## The backend fails during import or startup
 
-## Backend Startup
+Check `backend/.env` first.
 
-### `DATABASE_URL missing in .env`
+- `DATABASE_URL` must use the async SQLAlchemy form, such as `postgresql+asyncpg://...`.
+- The current service modules construct OpenAI and Moonshot-compatible clients during import. Set both `OPENAI_API_KEY` and `MOONSHOT_API_KEY` for a normal application run, even if you do not immediately use every AI feature.
+- `DEV_MODE=true` is rejected unless `APP_ENV` is exactly `development` or `test`.
+- `DEV_USER_ID` must be a valid UUID.
+- `CORS_ORIGINS` must contain explicit `http` or `https` origins with no path. `*` is rejected.
 
-Source: `backend/app/db.py`.
+Use synthetic/placeholder provider values only for deterministic tests; provider calls will fail with them.
 
-Cause:
+## PostgreSQL reports a missing table or column
 
-- `DATABASE_URL` is not defined in the backend environment.
+The repository does not contain a base migration and does not create tables at startup. Its three SQL migrations are incremental Exam Prep/Lockdown changes. A blank database will fail.
 
-Fix:
+Confirm that you have the owner-compatible baseline schema and that the incremental files in `backend/migrations/` were applied in filename-date order. Do not infer a complete schema by applying only those three files.
 
-```bash
-cd backend
-# define DATABASE_URL in your shell or backend/.env
-uvicorn app.main:app --reload
+Also verify that the PostgreSQL `vector` extension is available for the `Vector(1536)` concept column.
+
+## Authentication returns 401
+
+- Confirm the browser signed in and has a current Supabase session.
+- Confirm frontend and backend point to the same Supabase project.
+- Use the public anonymous key in both apps; do not expose a service-role key.
+- Confirm the request targets `NEXT_PUBLIC_API_BASE_URL`. The client intentionally does not attach the token to another origin.
+- An expired/invalid token causes sign-out and cleanup of known app-owned browser study state.
+
+For isolated direct API development, `APP_ENV=development` plus `DEV_MODE=true` enables a fixed backend user. It does not bypass the frontend's Supabase route guard.
+
+## The browser reports a CORS error
+
+Set the exact frontend origin in `CORS_ORIGINS`, with entries separated by commas:
+
+```dotenv
+CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ```
 
-Use an async PostgreSQL URL such as:
+Origins are scheme + hostname + optional port only. Do not include a path or trailing wildcard. Restart FastAPI after changing the environment.
 
-```text
-postgresql+asyncpg://USER:PASSWORD@HOST:5432/DATABASE
-```
+## An upload returns 413, 415, or “No text could be extracted”
 
-### Backend cannot authenticate requests
+- `413`: the file exceeds `MAX_UPLOAD_BYTES` (10 MiB by default).
+- `415`: its extension is not accepted for that route.
+- Empty/invalid document: the extension passed but the extractor found no usable text.
 
-Possible errors:
+Common format surprises:
 
-- `Missing Bearer token`
-- `Invalid or expired token`
-- `Auth is not configured`
+- Legacy `.ppt` is unsupported; convert it to `.pptx` or PDF.
+- Exam Prep materials accept `.pdf`, `.txt`, `.md`, and `.pptx`, not images.
+- Syllabi accept `.pdf`, `.txt`, and `.md`.
+- Images are accepted only by the document/work-review routes that enable image extraction.
+- A PDF, image, or presentation can also exceed its page, pixel, OCR-page, or expanded-size limit.
 
-Sources:
+These checks are not malware scanning. Do not expose the uploader to untrusted public traffic.
 
-- `backend/app/services/auth.py`
-- `frontend/lib/auth.ts`
+## Concept extraction is queued, interrupted, or appears stuck
 
-Fix:
+Heavy concept extraction runs inside the FastAPI process, one job at a time per process. A second note waits for the semaphore. There is no Redis/external worker.
 
-- Ensure frontend is sending a Supabase session token.
-- Ensure backend has `SUPABASE_URL` and `SUPABASE_ANON_KEY`.
-- For local-only bypass, set `DEV_MODE=true` and a valid `DEV_USER_ID`. Use this carefully.
+- Keep the API process running until the job reaches `completed` or `failed`.
+- Poll the note extraction-status endpoint rather than assuming the original request owns the work.
+- On restart, queued/running notes are reset to `idle` with an interruption error. Start extraction again from the UI/API.
+- Check provider availability and quota without logging or sharing the document content.
+- Lower `CONCEPT_CHUNK_CONCURRENCY` if the provider or local environment is resource-constrained.
 
-### Database connection issues
+## Exam Prep cannot generate a source-question plan
 
-Source: `backend/app/db.py`.
+- Select a course.
+- Upload a supported syllabus if syllabus evidence is desired.
+- Upload at least one Exam Prep material file.
+- Wait until material text extraction succeeds.
+- Run question extraction so the selected material has active persisted questions.
+- Select those materials before generating the plan.
 
-Checks:
+The planner can return warnings or require an explicit no-recommendations override when evidence is insufficient. That behavior is deliberate: it avoids presenting invented source questions as grounded recommendations.
 
-- Confirm `DATABASE_URL`.
-- Confirm database is reachable.
-- Confirm required tables exist.
-- Confirm exam prep SQL migrations were applied if using Exam Lockdown.
+## The daily or weekly planner component is missing
 
-The engine uses `NullPool`, `pool_pre_ping=True`, connection timeout, and statement timeout settings. This appears designed for hosted Postgres poolers.
+This is expected in the current UI. `/planner` mounts the Exam Prep planner only. The earlier `/plan/generate` and `/plan/weekly-generate` endpoints and corresponding React components remain in the codebase but are not mounted.
 
-## Frontend Startup
+## Browser-only work disappeared or remains after server deletion
 
-### Missing Supabase env vars
+Blurting/mind-map boards and homework chat display history use `localStorage`, not PostgreSQL. They are specific to a browser profile and do not sync across devices.
 
-Source: `frontend/lib/supabaseClient.ts`.
+Sign-out clears known app-owned study-state keys on that browser. Server-side class clear/delete does not independently reach other browser profiles or devices. Use the browser's site-data controls if manual removal is needed.
 
-Error:
+## Frontend environment or build errors
 
-```text
-Missing Supabase env vars. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.
-```
+`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are required when the Supabase client module is evaluated, including during a production build. Copy `frontend/.env.example` to `.env.local` for local work. CI supplies safe placeholders.
 
-Fix:
-
-- Define `NEXT_PUBLIC_SUPABASE_URL`.
-- Define `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
-
-### Frontend calls wrong backend URL
-
-Source: `frontend/lib/auth.ts`.
-
-Default:
-
-```text
-http://localhost:8000
-```
-
-Fix:
-
-- Set `NEXT_PUBLIC_API_BASE_URL` to the backend URL.
-
-### 401 redirects to login
-
-Source: `frontend/lib/auth.ts`.
-
-Behavior:
-
-- `authFetch` signs out and redirects to `/login` on 401.
-
-Fix:
-
-- Check Supabase session.
-- Check backend Supabase env vars.
-- Check token expiration.
-
-## Install Issues
-
-### Frontend dependency install
-
-Use npm because `frontend/package-lock.json` is present:
+Run the same checks as CI:
 
 ```bash
 cd frontend
-npm install
-```
-
-Unknown from current repo:
-
-- pnpm/yarn support.
-
-### Backend dependency install
-
-```bash
-cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-If `PyMuPDF`, `Pillow`, or `python-pptx` fail to install, check Python version and platform-specific package requirements. Exact supported Python version is unknown from current repo.
-
-## Build And Lint Issues
-
-Frontend commands:
-
-```bash
-cd frontend
+npm ci
 npm run lint
+npm run typecheck
 npm run build
 ```
 
-No backend lint/build script was found.
+If `eslint`, `next`, or `tsc` is not found, dependencies were not installed; run `npm ci` from `frontend/`, not the repository root.
 
-## Upload And Extraction Issues
+## Backend tests try to use a live service
 
-### Uploaded file has no text
-
-Source: `backend/app/routers/uploads.py`.
-
-Behavior:
-
-- Upload returns a 400 if no text could be extracted.
-
-Fix:
-
-- Try a text-based PDF, TXT, Markdown, or supported PPT file.
-- For image/PDF OCR paths, verify `OPENAI_API_KEY` if vision OCR is used.
-
-### PDF math/OCR is slow or incomplete
-
-Source: `backend/app/services/file_extraction.py`.
-
-Possible causes:
-
-- PDF text extraction is poor.
-- Vision OCR path is disabled or unavailable.
-- LLM/API credentials are missing.
-
-Fix:
-
-- Confirm whether the route allows vision OCR.
-- Confirm `OPENAI_API_KEY`.
-- Try a cleaner source file.
-
-## Concept Extraction Issues
-
-Sources:
-
-- `backend/app/routers/notes.py`
-- `backend/app/jobs/concept_jobs.py`
-- `backend/app/services/llm.py`
-
-Checks:
-
-- Note exists and belongs to current user.
-- Extraction is not already queued/running.
-- LLM key is configured.
-- Backend logs show job progress.
-
-Startup behavior:
-
-- `backend/app/main.py` resets notes stuck in `queued` or `running` to `idle` with an error that the server restarted before extraction finished.
-
-## Exam Lockdown Issues
-
-### Materials upload but no recommendations appear
-
-Check:
-
-1. Materials exist for selected class.
-2. Questions were extracted from selected materials.
-3. Plan generation completed after extraction.
-4. `exam_prep_recommended_questions` rows exist for the plan.
-5. Tutor is loading the active plan and `/plan/exam-prep/plans/{plan_id}/questions`.
-
-Important files:
-
-- `backend/app/routers/exam_prep.py`
-- `frontend/components/exam-prep/ExamPrepMaterialsList.tsx`
-- `frontend/components/exam-lockdown/ExamLockdownTutorMode.tsx`
-
-### Plan generation blocked by missing extracted questions
-
-Source: `backend/app/routers/exam_prep.py`.
-
-Behavior:
-
-- The request model includes `allow_no_recommendations`, defaulting to false.
-- Plan generation is intended to use persisted extracted question IDs for recommendations.
-
-Fix:
-
-- Extract questions from selected evidence first.
-- Regenerate the plan.
-
-### Re-extraction could affect old plans
-
-Source:
-
-- `backend/migrations/20260515_exam_prep_extracted_question_status.sql`
-- `backend/app/routers/exam_prep.py`
-
-Current design:
-
-- Extracted questions can have `status`.
-- Stale status helps preserve old recommendation links.
-
-Regression check:
-
-- After re-extracting a material, old plans should still show their saved recommended questions or stale source status.
-
-## Practice/Mastery Issues
-
-Sources:
-
-- `backend/app/routers/practice.py`
-- `backend/app/services/mastery.py`
-
-Checks:
-
-- Selected class has concepts.
-- Generated questions are persisted.
-- Attempts include concept IDs where required.
-- Mastery rows exist for concepts being updated.
-
-## No Test Suite Found
-
-No test folders or `*.test.*` / `*.spec.*` files were found.
-
-Use manual validation plus:
+The committed deterministic tests should not call PostgreSQL, Supabase, OpenAI, or Moonshot. Install the development dependency set and run from `backend/`:
 
 ```bash
-cd frontend
-npm run lint
-npm run build
+python -m pip install --requirement requirements-dev.txt
+python -m compileall -q app tests
+python -m pytest -q
 ```
 
-Backend automated validation is unknown from current repo.
+If a new test reaches a service, isolate the deterministic function or mock the narrow boundary. Do not add real credentials to CI.
 
-## Packaging/Release Issues
+## AI output is incomplete or incorrect
 
-Unknown from current repo:
-
-- Production deployment command.
-- CI/CD provider.
-- Docker setup.
-- Vercel configuration.
-- Backend hosting platform.
-- Release process.
-
-## Debugging Checklist
-
-1. Confirm selected class in UI.
-2. Confirm auth session exists.
-3. Confirm frontend API base URL.
-4. Confirm backend `/health`.
-5. Confirm database env and migrations.
-6. Confirm user/class ownership checks.
-7. Confirm LLM keys for LLM-backed features.
-8. Confirm relevant rows exist in database.
-9. Read browser network response bodies.
-10. Read backend terminal logs.
-
-## Log Locations
-
-Unknown from current repo. The backend uses `print` statements in several places. No structured logging or external log sink was found.
+Model output is probabilistic. Retry only when appropriate, inspect the stored source link/evidence, and treat mastery, topic confidence, plans, grading assistance, and tutor feedback as aids rather than authoritative academic judgments. This repository includes no formal AI-quality benchmark.

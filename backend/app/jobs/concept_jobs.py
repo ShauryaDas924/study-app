@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -26,6 +27,7 @@ from app.services.llm import (
 )
 
 CONCEPT_JOBS: dict[str, dict] = {}
+logger = logging.getLogger(__name__)
 
 # Bulletproof guard: only one heavy extraction job at once.
 # Raise to 2 later only if your DB/API can handle it.
@@ -45,13 +47,18 @@ class StepTimer:
 
     def __enter__(self):
         self.start = datetime.now(timezone.utc)
-        print(f"[EXTRACTION_TIMER] START {self.label} note_id={self.note_id}", self.extra)
+        logger.info("extraction_step_started step=%s metrics=%s", self.label, self.extra)
         return self
 
     def __exit__(self, exc_type, exc, tb):
         end = datetime.now(timezone.utc)
         elapsed = (end - self.start).total_seconds() if self.start else 0
-        print(f"[EXTRACTION_TIMER] END {self.label} note_id={self.note_id} elapsed={elapsed:.2f}s", self.extra)
+        logger.info(
+            "extraction_step_finished step=%s elapsed_seconds=%.2f metrics=%s",
+            self.label,
+            elapsed,
+            self.extra,
+        )
 
 def set_concept_job_status(note_id: str, patch: dict):
     existing = CONCEPT_JOBS.get(note_id, {})
@@ -64,16 +71,16 @@ def get_concept_job_status(note_id: str) -> dict | None:
 
 
 async def concept_extraction_job(note_id: str, user_id: str, mode: str | None = None):
-    print(f"[concept_job] START note_id={note_id} user_id={user_id} mode={mode}")
-
-    async with CONCEPT_EXTRACTION_SEMAPHORE:
-        await run_concept_extraction_async(
-            UUID(note_id),
-            UUID(user_id),
-            mode or "normal",
-        )
-
-    print(f"[concept_job] END note_id={note_id}")
+    try:
+        async with CONCEPT_EXTRACTION_SEMAPHORE:
+            await run_concept_extraction_async(
+                UUID(note_id),
+                UUID(user_id),
+                mode or "normal",
+            )
+    finally:
+        # Terminal state is persisted on Note; this map is only a live-process cache.
+        CONCEPT_JOBS.pop(note_id, None)
 
 
 def flatten_note_json(content):
@@ -202,15 +209,6 @@ async def run_concept_extraction_async(
         with StepTimer("refine_notes_background", note_key, {"raw_chars": len(note_text or "")}):
             refined_note_text = await refine_notes(note_text)
 
-        print(
-            "[concept_job] refine_notes_background_summary",
-            {
-                "note_id": note_key,
-                "raw_chars": len(note_text or ""),
-                "refined_chars": len(refined_note_text or ""),
-            },
-        )
-
         if refined_note_text and refined_note_text.strip():
             note_text = refined_note_text
 
@@ -234,16 +232,6 @@ async def run_concept_extraction_async(
                 concepts = await extract_math_concepts_from_note(note_text)
             else:
                 concepts = await extract_concepts_from_note(note_text)
-
-        print(
-            "[concept_job] concept_extraction_summary",
-            {
-                "note_id": note_key,
-                "mode": mode,
-                "note_chars": len(note_text or ""),
-                "concepts_count": len(concepts or []),
-            },
-        )
 
         set_concept_job_status(note_key, {"progress": 45})
 
@@ -270,14 +258,6 @@ async def run_concept_extraction_async(
                     "exam_priority_locked": c.get("exam_priority_locked", False),
                 })
 
-        print(
-            "[concept_job] enrichment_summary",
-            {
-                "note_id": note_key,
-                "enriched_concepts_count": len(enriched_concepts),
-            },
-        )
-
         # --------------------------------------------------
         # STEP 4: precompute embeddings with NO DB open
         # --------------------------------------------------
@@ -295,19 +275,12 @@ async def run_concept_extraction_async(
 
                 try:
                     embedding_map[c["name"]] = await run_in_threadpool(embed_text, text)
-                except Exception as e:
-                    print(f"⚠️ embedding failed for concept {c.get('name')}: {e}")
+                except Exception as exc:
+                    logger.warning(
+                        "concept_embedding_failed error_type=%s",
+                        type(exc).__name__,
+                    )
                     embedding_map[c["name"]] = None
-
-        print(
-            "[concept_job] embedding_summary",
-            {
-                "note_id": note_key,
-                "embedding_attempts": len(enriched_concepts),
-                "embedding_success": sum(1 for v in embedding_map.values() if v is not None),
-                "embedding_failed": sum(1 for v in embedding_map.values() if v is None),
-            },
-        )
 
         # --------------------------------------------------
         # STEP 5: write concepts quickly
@@ -325,14 +298,6 @@ async def run_concept_extraction_async(
                 note_exists = note_exists_res.scalar_one_or_none()
 
                 if not note_exists:
-                    print(
-                        "[concept_job] note_missing_before_concept_write",
-                        {
-                            "note_id": note_key,
-                            "reason": "note_was_deleted_before_note_concepts_insert",
-                        },
-                    )
-
                     set_concept_job_status(
                         note_key,
                         {
@@ -479,25 +444,6 @@ async def run_concept_extraction_async(
                     if payload["card_budget"] > 0:
                         concept_payloads.append(payload)
 
-                print(
-                    "[concept_job] linked_concepts=",
-                    len(linked_concepts),
-                    "concept_payloads_for_flashcards=",
-                    len(concept_payloads),
-                )
-
-                print("[concept_job] top flashcard payloads:", [
-                    {
-                        "name": p["name"],
-                        "type": p.get("type"),
-                        "role": p.get("role"),
-                        "budget": p.get("card_budget"),
-                        "confidence": p.get("confidence"),
-                        "evidence_len": len(p.get("evidence", "")),
-                    }
-                    for p in concept_payloads[:20]
-                ])
-
         # DB is closed here.
 
         concept_payloads.sort(
@@ -522,9 +468,6 @@ async def run_concept_extraction_async(
             else:
                 flashcards = []
 
-        print("[concept_job] generated_flashcards_before_grounding=", len(flashcards))
-        print("[concept_job] sample_flashcards_before_grounding=", flashcards[:10])
-
         # --------------------------------------------------
         # STEP 7.5: ground flashcard answers to original lecture notes
         # --------------------------------------------------
@@ -537,8 +480,6 @@ async def run_concept_extraction_async(
                     flashcards=flashcards,
                 )
 
-        print("[concept_job] generated_flashcards_after_grounding=", len(flashcards))
-        print("[concept_job] sample_flashcards_after_grounding=", flashcards[:10])
         # --------------------------------------------------
         # STEP 8: save flashcards quickly
         # --------------------------------------------------
@@ -666,15 +607,13 @@ async def run_concept_extraction_async(
                     note.extraction_error = None
                     note.extraction_finished_at = datetime.now(timezone.utc)
                 
-                print(
-                    "[concept_job] flashcard_save_summary",
-                    {
-                        "generated": len(flashcards),
-                        "saved": saved_count,
-                        "skipped_missing_question": skipped_missing_question,
-                        "skipped_exact_duplicate": skipped_exact_duplicate,
-                        "skipped_semantic_duplicate": skipped_semantic_duplicate,
-                    }
+                logger.info(
+                    "flashcard_save_finished generated=%d saved=%d missing=%d exact_duplicates=%d semantic_duplicates=%d",
+                    len(flashcards),
+                    saved_count,
+                    skipped_missing_question,
+                    skipped_exact_duplicate,
+                    skipped_semantic_duplicate,
                 )
                 
                 
@@ -690,15 +629,15 @@ async def run_concept_extraction_async(
             },
         )
 
-    except Exception as e:
-        err = str(e)
+    except Exception as exc:
+        public_error = "Extraction failed. Retry or check the server configuration."
 
         set_concept_job_status(
             note_key,
             {
                 "status": "failed",
                 "progress": 100,
-                "error": err,
+                "error": public_error,
                 "finished_at": now_iso(),
             },
         )
@@ -710,9 +649,8 @@ async def run_concept_extraction_async(
             note = res.scalar_one_or_none()
             if note:
                 note.extraction_status = "failed"
-                note.extraction_error = err
+                note.extraction_error = public_error
                 note.extraction_finished_at = datetime.now(timezone.utc)
                 await db.commit()
 
-        print(f"[concept_job] failed note_id={note_id}: {err}")
-        raise
+        logger.error("concept_extraction_failed error_type=%s", type(exc).__name__)

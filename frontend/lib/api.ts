@@ -51,7 +51,7 @@ export interface NoteCreateIn {
   title: string;
   content_json: Record<string, unknown>;
   auto_extract?: boolean;
-  mode?: string;
+  mode?: "normal" | "math";
 }
 
 export interface NoteCreateOut {
@@ -84,7 +84,7 @@ export interface StartExtractionOut {
 
 export interface ExtractionStatusOut {
   note_id: UUID;
-  status: "idle" | "queued" | "running" | "completed" | "failed";
+  status: "idle" | "queued" | "running" | "completed" | "failed" | "cancelled";
   progress: number;
   mode?: string | null;
   error?: string | null;
@@ -93,21 +93,19 @@ export interface ExtractionStatusOut {
 }
 
 /**
- * Your backend returns questions as:
- * { id, prompt } from /practice/generate and remedial routes.
- * Full question_json is server-side and used by step/hint/why-wrong routes.
+ * Public question_json contains only renderable type/options. Answer keys,
+ * solutions, and reasoning paths remain server-side.
  */
 export interface PracticeQuestionJson {
   type?: string;
-  options: string[];
-  correct_index: number;
+  options?: string[];
   [key: string]: unknown;
 }
 
 export interface PracticeQuestionStub {
   id: UUID;
   prompt: string;
-  question_json: PracticeQuestionJson;
+  question_json?: PracticeQuestionJson;
 }
 
 export interface PracticeGenerateIn {
@@ -157,16 +155,12 @@ export interface CrossConceptWeakness {
   prerequisites_for_this_concept?: UUID[];
 }
 
-/**
- * NOTE: Your backend currently has a small bug in the return dict:
- * it’s missing a comma between auto_remedial_created and weakness.
- * Once you fix it, this type matches expected output.
- */
 export interface SubmitAttemptOut {
   ok: true;
+  is_correct: boolean;
   feedback: AttemptFeedback | null;
   auto_remedial_created: boolean;
-  weakness?: CrossConceptWeakness;
+  weakness: CrossConceptWeakness | null;
 }
 
 export interface NextStepOut {
@@ -286,8 +280,10 @@ export interface PlanGenerateIn {
 }
 
 export interface DailyPlanTask {
-  type: "review" | "practice" | "reflection";
+  type: "concept" | "review" | "practice" | "reflection";
   concept_id?: UUID;
+  concept_name?: string;
+  mastery?: number;
   minutes: number;
   goal: string;
 }
@@ -368,7 +364,7 @@ export interface UploadExamPrepSyllabusOut {
 }
 
 export interface ExamPrepEvidenceItem {
-  source: "syllabus" | "concept" | "mastery" | "inference" | "material" | "question";
+  source: "syllabus" | "concept" | "mastery" | "inference" | "material" | "question" | "pitfall";
   label: string;
   quote: string | null;
   concept_id: UUID | null;
@@ -593,8 +589,23 @@ export interface ExamLockdownProgress {
 export interface ExamLockdownTutorResponse {
   response_markdown: string;
   recommended_question_id: UUID;
-  question: ExamPrepExtractedQuestion;
-  material?: ExamPrepMaterial | null;
+  question: {
+    id: UUID;
+    problem_number?: string | null;
+    prompt_text: string;
+    answer_text?: string | null;
+    solution_text?: string | null;
+    topic_name?: string | null;
+    source_ref_json: Record<string, unknown>;
+    confidence?: number | null;
+    status?: string;
+  };
+  material?: {
+    id: UUID;
+    filename: string;
+    material_type: ExamPrepMaterialType;
+    mime_type?: string | null;
+  } | null;
 }
 
 export interface ExamLockdownAttemptPayload {
@@ -646,7 +657,7 @@ export const api = {
     request<NoteOut>(`/notes/${noteId}`),
 
   // note extraction background jobs
-  startConceptExtraction: (noteId: UUID, mode?: string) =>
+  startConceptExtraction: (noteId: UUID, mode?: "normal" | "math") =>
     request<StartExtractionOut>(`/notes/${noteId}/extract/start`, {
       method: "POST",
       body: JSON.stringify({ mode }),

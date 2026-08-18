@@ -70,7 +70,6 @@ function getAdaptiveBubbleScale(count: number) {
 
 export default function BlurtingBoard() {
   const boardRef = useRef<HTMLDivElement | null>(null);
-  const popAudioRef = useRef<HTMLAudioElement | null>(null);
   const classId = useStore((s) => s.selectedClassId);
 
   const [duration, setDuration] = useState<number>(60);
@@ -79,27 +78,38 @@ export default function BlurtingBoard() {
   const [timeUp, setTimeUp] = useState(false);
   const [input, setInput] = useState("");
   const [bubbles, setBubbles] = useState<BubbleItem[]>([]);
+  const [hydratedClassId, setHydratedClassId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!classId) return;
+    setDuration(60);
+    setRemainingTime(60);
+    setBubbles([]);
+    setInput("");
+    setTimeUp(false);
+    setIsRunning(false);
+
+    if (!classId) {
+      setHydratedClassId(null);
+      return;
+    }
 
     const saved = localStorage.getItem(`blurting_board_${classId}`);
-    if (!saved) return;
-
-    try {
-      const parsed: BlurtingStorage = JSON.parse(saved);
-      setDuration(parsed.duration ?? 60);
-      setRemainingTime(parsed.remainingTime ?? parsed.duration ?? 60);
-      setBubbles(parsed.bubbles ?? []);
-      setTimeUp(false);
-      setIsRunning(false);
-    } catch (error) {
-      console.error("Failed to load blurting board from localStorage", error);
+    if (saved) {
+      try {
+        const parsed: BlurtingStorage = JSON.parse(saved);
+        setDuration(parsed.duration ?? 60);
+        setRemainingTime(parsed.remainingTime ?? parsed.duration ?? 60);
+        setBubbles(parsed.bubbles ?? []);
+      } catch {
+        localStorage.removeItem(`blurting_board_${classId}`);
+      }
     }
+
+    setHydratedClassId(classId);
   }, [classId]);
 
   useEffect(() => {
-    if (!classId) return;
+    if (!classId || hydratedClassId !== classId) return;
 
     const payload: BlurtingStorage = {
       duration,
@@ -108,7 +118,7 @@ export default function BlurtingBoard() {
     };
 
     localStorage.setItem(`blurting_board_${classId}`, JSON.stringify(payload));
-  }, [classId, duration, remainingTime, bubbles]);
+  }, [classId, hydratedClassId, duration, remainingTime, bubbles]);
 
   useEffect(() => {
     if (!isRunning) {
@@ -160,19 +170,6 @@ export default function BlurtingBoard() {
 
     if (classId) {
       localStorage.removeItem(`blurting_board_${classId}`);
-    }
-  };
-
-  const playPopSound = () => {
-    const audio = popAudioRef.current;
-    if (!audio) return;
-
-    try {
-      audio.currentTime = 0;
-      audio.volume = 0.32;
-      void audio.play();
-    } catch (error) {
-      console.error("Failed to play pop sound", error);
     }
   };
 
@@ -251,7 +248,6 @@ export default function BlurtingBoard() {
     };
 
     setBubbles((prev) => [...prev, nextBubble]);
-    playPopSound();
     setInput("");
   };
 
@@ -262,7 +258,6 @@ export default function BlurtingBoard() {
   if (!classId) {
     return (
       <div className={styles.panelWrap}>
-        <audio ref={popAudioRef} preload="auto" src="/sounds/bubble-pop.mp3" />
         <div className={styles.panelTitle}>Blurting Board</div>
         <p className={styles.panelText}>
           Select a course first to save blurting boards by class.
@@ -273,8 +268,6 @@ export default function BlurtingBoard() {
 
   return (
     <div className={styles.panelWrap}>
-      <audio ref={popAudioRef} preload="auto" src="/sounds/bubble-pop.mp3" />
-
       <div className={styles.panelTopRow}>
         <div className={styles.panelIntro}>
           <h2 className={styles.panelTitle}>Blurting Board</h2>

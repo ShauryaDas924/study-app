@@ -2,20 +2,35 @@ import os
 from uuid import UUID
 
 import httpx
+from dotenv import load_dotenv
 from fastapi import Header, HTTPException
+
+load_dotenv()
 
 def _env_true(v: str | None) -> bool:
     return (v or "").lower() in ("1", "true", "yes", "y", "on")
 
 DEV_MODE = _env_true(os.getenv("DEV_MODE"))
 DEV_USER_ID = os.getenv("DEV_USER_ID", "00000000-0000-0000-0000-000000000001")
+APP_ENV = (os.getenv("APP_ENV") or "production").strip().lower()
+
+if DEV_MODE and APP_ENV not in {"development", "test"}:
+    raise RuntimeError(
+        "DEV_MODE is a development-only authentication bypass. "
+        "Set APP_ENV=development explicitly before enabling it."
+    )
+
+try:
+    PARSED_DEV_USER_ID = UUID(DEV_USER_ID)
+except ValueError as exc:
+    raise RuntimeError("DEV_USER_ID must be a valid UUID.") from exc
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 
 async def get_current_user_id(authorization: str | None = Header(default=None)) -> UUID:
     if DEV_MODE:
-        return UUID(DEV_USER_ID)
+        return PARSED_DEV_USER_ID
 
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")

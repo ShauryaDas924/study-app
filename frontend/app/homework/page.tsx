@@ -88,6 +88,42 @@ type ToolModal =
   | "history"
   | "sessions";
 
+type StepAction =
+  | "check_this_step"
+  | "help_me_continue"
+  | "what_did_i_do_right"
+  | "what_to_watch_next_time";
+
+function Modal({
+  title,
+  children,
+  onClose,
+}: {
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4 py-6 backdrop-blur-sm">
+      <div className="w-full max-w-2xl overflow-hidden rounded-3xl border border-orange-100 bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-orange-100 px-5 py-4">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
+            <p className="text-xs text-slate-500">Homework Helper tool</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-full border border-slate-200 px-3 py-1.5 text-sm hover:bg-slate-50"
+          >
+            Close
+          </button>
+        </div>
+        <div className="max-h-[75vh] overflow-y-auto p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
 function firstText(...values: Array<string | undefined | null>) {
   return values.find((value) => typeof value === "string" && value.trim())?.trim();
 }
@@ -192,18 +228,11 @@ function HomeworkContent() {
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedStep, setSelectedStep] = useState("");
   const [stepPrompt, setStepPrompt] = useState("");
-  const [stepAction, setStepAction] = useState<
-    | "check_this_step"
-    | "help_me_continue"
-    | "what_did_i_do_right"
-    | "what_to_watch_next_time"
-  >("check_this_step");
+  const [stepAction, setStepAction] = useState<StepAction>("check_this_step");
 
   const [uploadedWorkName, setUploadedWorkName] = useState("");
   const [stepHistory, setStepHistory] = useState<StepHistoryItem[]>([]);
   const [reviewSessions, setReviewSessions] = useState<ReviewSession[]>([]);
-  const [selectedRegion, setSelectedRegion] = useState<any | null>(null);
-
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [questions, setQuestions] = useState<string[]>([]);
   const [qIndex, setQIndex] = useState(0);
@@ -353,16 +382,6 @@ function HomeworkContent() {
                   {children}
                 </pre>
               ),
-              code: ({ inline, children, ...props }: any) =>
-                inline ? (
-                  <code className="rounded bg-slate-100 px-1 py-0.5 text-sm" {...props}>
-                    {children}
-                  </code>
-                ) : (
-                  <code className="text-sm" {...props}>
-                    {children}
-                  </code>
-                ),
               ul: ({ children }) => <ul className="my-3 list-disc pl-6">{children}</ul>,
               ol: ({ children }) => <ol className="my-3 list-decimal pl-6">{children}</ol>,
               li: ({ children }) => <li className="mb-1">{children}</li>,
@@ -384,36 +403,6 @@ function HomeworkContent() {
           </ReactMarkdown>
         </div>
       </>
-    );
-  }
-
-  function Modal({
-    title,
-    children,
-  }: {
-    title: string;
-    children: React.ReactNode;
-  }) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4 py-6 backdrop-blur-sm">
-        <div className="w-full max-w-2xl overflow-hidden rounded-3xl border border-orange-100 bg-white shadow-2xl">
-          <div className="flex items-center justify-between border-b border-orange-100 px-5 py-4">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
-              <p className="text-xs text-slate-500">Homework Helper tool</p>
-            </div>
-
-            <button
-              onClick={() => setActiveModal(null)}
-              className="rounded-full border border-slate-200 px-3 py-1.5 text-sm hover:bg-slate-50"
-            >
-              Close
-            </button>
-          </div>
-
-          <div className="max-h-[75vh] overflow-y-auto p-5">{children}</div>
-        </div>
-      </div>
     );
   }
 
@@ -524,7 +513,6 @@ function HomeworkContent() {
           session_id: reviewSessionId,
           user_prompt: stepPrompt,
           selected_step: selectedStep,
-          selected_region: selectedRegion,
           action: stepAction,
         }),
       });
@@ -986,7 +974,7 @@ function HomeworkContent() {
       </div>
 
       {activeModal === "upload" && (
-        <Modal title="Upload Assignment / Extract Questions">
+        <Modal title="Upload Assignment / Extract Questions" onClose={() => setActiveModal(null)}>
           <div className="space-y-4">
             <p className="text-sm leading-6 text-slate-600">
               Upload a homework sheet or document. The app will extract individual
@@ -994,7 +982,11 @@ function HomeworkContent() {
             </p>
 
             <div className="rounded-2xl border border-dashed border-slate-300 p-5">
-              <input type="file" onChange={upload} />
+              <input
+                type="file"
+                accept=".pdf,.txt,.md,.pptx,.png,.jpg,.jpeg"
+                onChange={upload}
+              />
             </div>
 
             {questions.length > 0 && (
@@ -1007,7 +999,7 @@ function HomeworkContent() {
       )}
 
       {activeModal === "review" && (
-        <Modal title="Review My Full Work">
+        <Modal title="Review My Full Work" onClose={() => setActiveModal(null)}>
           <div className="space-y-4">
             <p className="text-sm leading-6 text-slate-600">
               Upload your full solution. The tutor will review what is correct, what
@@ -1015,14 +1007,14 @@ function HomeworkContent() {
             </p>
 
             <div className="rounded-2xl border border-dashed border-slate-300 p-5">
-              <input type="file" onChange={reviewUpload} />
+              <input type="file" accept=".pdf,.png,.jpg,.jpeg" onChange={reviewUpload} />
             </div>
           </div>
         </Modal>
       )}
 
       {activeModal === "step" && (
-        <Modal title="Step Check Tutor">
+        <Modal title="Step Check Tutor" onClose={() => setActiveModal(null)}>
           <div className="space-y-4">
             <p className="text-sm leading-6 text-slate-600">
               Upload your work, select a previous session, then describe the exact
@@ -1064,7 +1056,11 @@ function HomeworkContent() {
             )}
 
             <div className="rounded-2xl border border-dashed border-slate-300 p-5">
-              <input type="file" onChange={uploadStepCheckWork} />
+              <input
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg"
+                onChange={uploadStepCheckWork}
+              />
             </div>
 
             {uploadedWorkName && (
@@ -1080,7 +1076,7 @@ function HomeworkContent() {
 
               <select
                 value={stepAction}
-                onChange={(e) => setStepAction(e.target.value as any)}
+                onChange={(e) => setStepAction(e.target.value as StepAction)}
                 className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3"
               >
                 <option value="check_this_step">Check this step</option>
@@ -1166,7 +1162,7 @@ function HomeworkContent() {
       )}
 
       {activeModal === "history" && (
-        <Modal title="Step Review History">
+        <Modal title="Step Review History" onClose={() => setActiveModal(null)}>
           {stepHistory.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
               No step history loaded yet. Upload or select a step-check session first.

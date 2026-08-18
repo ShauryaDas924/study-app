@@ -2,6 +2,8 @@
 .env
 .env.*
 *.env
+!.env.example
+!**/.env.example
 
 # ---------- PYTHON ----------
 venv/
@@ -39,6 +41,16 @@ Thumbs.db
 
 # ---------- TEST ----------
 .pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
 
 # ---------- MISC ----------
 coverage/
+
+# ---------- LOCAL PORTFOLIO / AUDIT ARTIFACTS ----------
+linkedin-media/
+resume-context/
+resume-context.zip

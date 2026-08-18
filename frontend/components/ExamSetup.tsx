@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation } from "@tanstack/react-query";
+import { useState } from "react";
 import { api } from "@/lib/api";
 import { useStore } from "@/store/useStore";
 import { Button } from "@/components/ui/Button";
@@ -47,6 +48,6 @@ export default function ExamSetup() {
 }
 
 function useStateNumber(initial: number) {
-  const [v, setV] = (require("react") as typeof import("react")).useState<number>(initial);
+  const [v, setV] = useState<number>(initial);
   return [v, setV] as const;
 }

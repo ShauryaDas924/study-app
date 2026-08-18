@@ -1,17 +1,22 @@
+import logging
+
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from app.services.auth import get_current_user_id
 from app.services.file_extraction import extract_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from uuid import UUID
+from app.services.kimi import KIMI_MODEL
 from app.services.llm import client, kimi_client
 from app.db import get_db
 from app.models import Class, Concept, ExamInsight
 from fastapi import Form
 from app.services.llm import top_k_concepts
+from app.services.upload_safety import IMAGE_OR_PDF_EXTENSIONS, read_upload_limited
 
 
 router = APIRouter(prefix="/performance", tags=["performance"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/analyze-exam")
@@ -37,16 +42,16 @@ async def analyze_exam(
     if not class_res.scalar_one_or_none():
         raise HTTPException(404, "Class not found")
 
-    content = await file.read()
+    filename, content = await read_upload_limited(file, IMAGE_OR_PDF_EXTENSIONS)
 
-    text = await extract_text(
-        file.filename,
-        content,
-        math_mode=True
-    )
+    try:
+        text = await extract_text(filename, content, math_mode=True)
+    except Exception as exc:
+        logger.warning("exam_upload_extraction_failed error_type=%s", type(exc).__name__)
+        raise HTTPException(400, "The uploaded exam could not be processed") from exc
 
-    print("\n===== EXTRACTED EXAM TEXT =====")
-    print(text[:800])
+    if not text or not text.strip():
+        raise HTTPException(400, "No text could be extracted from the uploaded exam")
     
     # -------- LOAD CLASS CONCEPTS --------
     res = await db.execute(
@@ -60,10 +65,7 @@ async def analyze_exam(
     
     # -------- RAG CONCEPT RETRIEVAL --------
     query = text[:4000]
-    print("\nTOTAL CONCEPTS IN CLASS:", len(concepts))
-
     missing = sum(1 for c in concepts if c.embedding is None)
-    print("CONCEPTS WITH MISSING EMBEDDINGS:", missing)
     scored_concepts = await top_k_concepts(
         query,
         concepts,
@@ -72,12 +74,12 @@ async def analyze_exam(
 
     top_concepts = [c for score, c in scored_concepts]
     
-    print("\n===== EXAM CONCEPT RETRIEVAL =====")
-
-    for i, (score, c) in enumerate(scored_concepts, 1):
-        print(f"\n[Concept {i}]")
-        print(f"Score: {round(score,4)}")
-        print(f"Name: {c.name}")
+    logger.info(
+        "exam_analysis_retrieval concepts=%d missing_embeddings=%d matches=%d",
+        len(concepts),
+        missing,
+        len(scored_concepts),
+    )
         
     # -------- BUILD CONCEPT CONTEXT --------
     context = "\n\n".join([
@@ -100,7 +102,7 @@ async def analyze_exam(
     
     
     resp = kimi_client.chat.completions.create(
-        model="kimi-k2.5",
+        model=KIMI_MODEL,
         messages=[
             {
                 "role": "system",
@@ -384,7 +386,7 @@ Equations: $$...$$
     insight = ExamInsight(
         user_id=current_user_id,
         class_id=class_uuid,
-        filename=file.filename,
+        filename=filename,
         extracted_text=text,
         analysis=analysis_text
     )

@@ -8,7 +8,7 @@ export default function UploadNotes({
   onExtracted,
   onCreatedNote,
 }: {
-  onExtracted?: (text: string, flashcards: any[]) => void;
+  onExtracted?: (text: string, flashcards: unknown[]) => void;
   onCreatedNote?: (noteId: string) => void;
 }) {
   const [loading, setLoading] = useState(false);
@@ -17,6 +17,12 @@ export default function UploadNotes({
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (file.size > 10 * 1024 * 1024) {
+      alert("Upload must be 10 MiB or smaller.");
+      e.target.value = "";
+      return;
+    }
 
     if (!selectedClassId) {
       alert("Please select a class first.");
@@ -38,20 +44,14 @@ export default function UploadNotes({
       });
 
       if (!res.ok) {
-        const errText = await res.text();
-        console.error("UPLOAD FAILED:", errText);
-        alert("Upload failed. Check console.");
+        alert("Upload failed. Check the file type and size, then try again.");
         return;
       }
 
       const data = await res.json();
 
-      console.log("FULL RESPONSE:", data);
-
       const extractedText =
         typeof data.extracted_text === "string" ? data.extracted_text : "";
-
-      console.log("EXTRACTED TEXT:", extractedText.slice(0, 200));
 
       onExtracted?.(
         extractedText,
@@ -61,9 +61,8 @@ export default function UploadNotes({
       if (data.note_id) {
         onCreatedNote?.(data.note_id);
       }
-    } catch (err) {
-      console.error("Upload failed:", err);
-      alert("Upload failed. Check console.");
+    } catch {
+      alert("Upload failed. Please try again.");
     } finally {
       setLoading(false);
       e.target.value = "";
@@ -72,7 +71,11 @@ export default function UploadNotes({
 
   return (
     <div className="space-y-2">
-      <input type="file" onChange={handleUpload} />
+      <input
+        type="file"
+        accept=".pdf,.txt,.md,.pptx,.png,.jpg,.jpeg"
+        onChange={handleUpload}
+      />
 
       {loading && (
         <div className="text-xs text-slate-500">

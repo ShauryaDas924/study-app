@@ -1,9 +1,10 @@
 
 import random
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+from typing import Annotated, Literal
 from uuid import UUID
 import json
 from app.services.llm import client
@@ -12,6 +13,11 @@ from app.services.llm import propose_dependencies
 from app.db import get_db
 from app.models import Concept, PracticeSet, Question, Attempt, Mastery
 from app.services.auth import get_current_user_id
+from app.services.attempts import (
+    public_question_json,
+    resolve_attempt_correctness,
+    resolve_practice_difficulty,
+)
 from app.services.llm import generate_one_question
 from app.services.mastery import update_mastery_value, apply_forgetting, days_since
 from datetime import datetime, timezone
@@ -58,25 +64,28 @@ async def get_concept_cluster(
     
 class GenerateIn(BaseModel):
     class_id: UUID
-    difficulty: int | None = 3
-    n: int = 5
-    subject_tag: str = "general"
-    question_type: str = "open"
+    difficulty: int | None = Field(default=3, ge=1, le=5)
+    n: int = Field(default=5, ge=1, le=20)
+    subject_tag: str = Field(default="general", min_length=1, max_length=80)
+    question_type: Literal["open", "mcq"] = "open"
     
 class RemedialIn(BaseModel):
     class_id: UUID
-    n: int = 8
-    difficulty: int = 2
-    subject_tag: str = "remedial"
-    lookback_days: int = 14
-    top_tags: int = 5
+    n: int = Field(default=8, ge=1, le=20)
+    difficulty: int = Field(default=2, ge=1, le=5)
+    subject_tag: str = Field(default="remedial", min_length=1, max_length=80)
+    lookback_days: int = Field(default=14, ge=1, le=365)
+    top_tags: int = Field(default=5, ge=1, le=20)
     include_dependencies: bool = True
     
+BoundedStep = Annotated[str, Field(min_length=1, max_length=4000)]
+
+
 class StepGradeIn(BaseModel):
-    steps: list[str]
+    steps: list[BoundedStep] = Field(min_length=1, max_length=50)
 
 class TutorAskIn(BaseModel):
-    question: str
+    question: str = Field(min_length=1, max_length=4000)
 
 async def _select_remedial_concepts(
     db: AsyncSession,
@@ -100,7 +109,13 @@ async def _select_remedial_concepts(
     # 1) Find recent mistake logs for this user
     mres = await db.execute(
         select(MistakeLog)
-        .where(MistakeLog.user_id == user_id, MistakeLog.created_at >= since)
+        .join(Concept, Concept.id == MistakeLog.concept_id)
+        .where(
+            MistakeLog.user_id == user_id,
+            MistakeLog.created_at >= since,
+            Concept.user_id == user_id,
+            Concept.class_id == class_id,
+        )
         .order_by(MistakeLog.created_at.desc())
         .limit(200)
     )
@@ -295,16 +310,10 @@ async def generate_practice(
 
     # 3) Sort weakest first
     concepts.sort(key=lambda c: m_map.get(c.id, 0.35))
-    # --- Adaptive difficulty ---
-    if mastery_rows and payload.difficulty is None:
-        avg_mastery = sum(m.mastery_prob for m in mastery_rows) / len(mastery_rows)
-
-        if avg_mastery < 0.4:
-            payload.difficulty = 2
-        elif avg_mastery < 0.7:
-            payload.difficulty = 3
-        else:
-            payload.difficulty = 4
+    difficulty = resolve_practice_difficulty(
+        payload.difficulty,
+        [float(m.mastery_prob) for m in mastery_rows],
+    )
             
     concept_payload = [
     {
@@ -320,7 +329,7 @@ async def generate_practice(
     ps = PracticeSet(
         user_id=user_id,
         class_id=payload.class_id,
-        settings_json={"difficulty": payload.difficulty, "n": payload.n},
+        settings_json={"difficulty": difficulty, "n": payload.n},
         source="notes"
     )
 
@@ -373,19 +382,19 @@ async def generate_practice(
         if payload.question_type == "mcq":
             qobj = await generate_mcq(
                 concepts=names,
-                difficulty=payload.difficulty,
+                difficulty=difficulty,
                 subject_tag=payload.subject_tag
             )
         else:
             qobj = await generate_one_question(
                 concepts=names,
-                difficulty=payload.difficulty,
+                difficulty=difficulty,
                 subject_tag=payload.subject_tag,
                 concept_details=sampled
             )
 
         # match concept
-        chosen_concept_id = None
+        chosen_concept_id = base_concept.id if payload.question_type == "mcq" else None
         if payload.question_type != "mcq" and qobj.get("metadata", {}).get("concepts"):
             name0 = qobj["metadata"]["concepts"][0]
             match = next((c for c in concepts if c.name == name0), None)
@@ -398,7 +407,7 @@ async def generate_practice(
         # solution logic
         if qtype == "mcq":
             solution_text = qobj.get("explanation", "")
-            difficulty_val = payload.difficulty
+            difficulty_val = difficulty
         else:
             solution_text = (
                 "\n".join(qobj["solution"]["steps"])
@@ -424,13 +433,13 @@ async def generate_practice(
         created_questions.append({
             "id": str(q.id),
             "prompt": q.prompt,
-            "question_json": qobj
+            "question_json": public_question_json(
+                question_type=q.qtype,
+                question_json=q.question_json,
+            ),
         })
 
     await db.commit()
-    print("USER:", user_id)
-    print("CLASS:", payload.class_id)
-    print("CONCEPT COUNT:", len(concepts))
     return {
         "practice_set_id": str(ps.id),
         "questions": created_questions
@@ -531,9 +540,9 @@ async def generate_remedial_practice(
 
 class StartExamIn(BaseModel):
     class_id: UUID
-    time_limit_min: int = 60
-    n_questions: int = 20
-    question_type: str = "open"
+    time_limit_min: int = Field(default=60, ge=1, le=480)
+    n_questions: int = Field(default=20, ge=1, le=20)
+    question_type: Literal["open", "mcq"] = "open"
 
 @router.post("/exam/start")
 async def start_exam(
@@ -572,9 +581,16 @@ async def start_exam(
 class AttemptIn(BaseModel):
     user_answer_json: dict
     is_correct: bool
-    confidence: int = 3
-    time_spent_sec: int = 0
+    confidence: int = Field(default=3, ge=1, le=5)
+    time_spent_sec: int = Field(default=0, ge=0, le=86400)
     session_id: UUID | None = None
+
+    @field_validator("user_answer_json")
+    @classmethod
+    def bound_answer_json(cls, value: dict) -> dict:
+        if len(json.dumps(value, ensure_ascii=False)) > 20_000:
+            raise ValueError("user_answer_json exceeds the 20,000-character limit")
+        return value
 
 @router.post("/questions/{question_id}/attempt")
 async def submit_attempt(question_id: UUID, payload: AttemptIn, db: AsyncSession = Depends(get_db), user_id: UUID = Depends(get_current_user_id)):
@@ -594,12 +610,19 @@ async def submit_attempt(question_id: UUID, payload: AttemptIn, db: AsyncSession
         if not session_res.scalar_one_or_none():
             raise HTTPException(404, "Exam session not found")
 
+    is_correct = resolve_attempt_correctness(
+        question_type=q.qtype,
+        question_json=q.question_json,
+        user_answer_json=payload.user_answer_json,
+        self_reported=payload.is_correct,
+    )
+
     attempt = Attempt(
         user_id=user_id,
         question_id=q.id,
         concept_id=q.concept_id,
         user_answer_json=payload.user_answer_json,
-        is_correct=payload.is_correct,
+        is_correct=is_correct,
         confidence=payload.confidence,
         time_spent_sec=payload.time_spent_sec,
         session_id=payload.session_id
@@ -608,7 +631,7 @@ async def submit_attempt(question_id: UUID, payload: AttemptIn, db: AsyncSession
     # --- Structured misconception logging ---
     feedback = None
     weakness = None
-    if q.question_json and not payload.is_correct:
+    if q.question_json and not is_correct:
         mistakes = q.question_json.get("common_mistakes", [])
 
         if mistakes:
@@ -639,17 +662,18 @@ async def submit_attempt(question_id: UUID, payload: AttemptIn, db: AsyncSession
                 deps = dres.scalars().all()
 
                 weakness["prerequisites_for_this_concept"] = [str(x) for x in deps]
-            db.add(
-                TutorMemory(
-                    user_id=user_id,
-                    concept_id=q.concept_id,
-                    note=feedback["mistake"]
+            if q.concept_id:
+                db.add(
+                    TutorMemory(
+                        user_id=user_id,
+                        concept_id=q.concept_id,
+                        note=feedback["mistake"]
+                    )
                 )
-            )
 
         
 
-    if feedback:
+    if feedback and q.concept_id:
         db.add(
             MistakeLog(
                 user_id=user_id,
@@ -660,15 +684,16 @@ async def submit_attempt(question_id: UUID, payload: AttemptIn, db: AsyncSession
         )
     # -------- AUTO-REMEDIAL TRIGGER --------
 
-    fail_res = await db.execute(
-        select(MistakeLog)
-        .where(
-            MistakeLog.user_id == user_id,
-            MistakeLog.concept_id == q.concept_id
+    recent_failures = 0
+    if q.concept_id:
+        fail_res = await db.execute(
+            select(MistakeLog)
+            .where(
+                MistakeLog.user_id == user_id,
+                MistakeLog.concept_id == q.concept_id
+            )
         )
-    )
-
-    recent_failures = len(fail_res.scalars().all())
+        recent_failures = len(fail_res.scalars().all())
 
     auto_remedial_created = False
     # Mastery update if concept exists
@@ -684,12 +709,12 @@ async def submit_attempt(question_id: UUID, payload: AttemptIn, db: AsyncSession
         days = days_since(m.last_practiced_at)
         decayed = apply_forgetting(m.mastery_prob, days, lam=0.05)
         updated = update_mastery_value(
-    decayed,
-    payload.is_correct,
-    q.difficulty,
-    payload.confidence,
-    payload.time_spent_sec
-)
+            decayed,
+            is_correct,
+            q.difficulty,
+            payload.confidence,
+            payload.time_spent_sec,
+        )
 
         m.mastery_prob = updated
         db.add(
@@ -778,7 +803,7 @@ async def submit_attempt(question_id: UUID, payload: AttemptIn, db: AsyncSession
 
                 auto_remedial_created = True
         # --- Dependency diagnosis ---
-        if not payload.is_correct and q.concept_id:
+        if not is_correct and q.concept_id:
             dres = await db.execute(
                 select(ConceptDependency.depends_on_concept_id)
                 .where(ConceptDependency.concept_id == q.concept_id)
@@ -786,7 +811,6 @@ async def submit_attempt(question_id: UUID, payload: AttemptIn, db: AsyncSession
             deps = dres.scalars().all()
 
             if deps:
-                print("Student may be weak in prerequisites:", deps)
                 m.last_updated_at = datetime.now(timezone.utc)
         
             
@@ -794,6 +818,7 @@ async def submit_attempt(question_id: UUID, payload: AttemptIn, db: AsyncSession
             
     return {
         "ok": True,
+        "is_correct": is_correct,
         "feedback": feedback,
         "auto_remedial_created": auto_remedial_created,
         "weakness": weakness
@@ -862,13 +887,6 @@ async def grade_steps(
 
     qres = await db.execute(select(Question).where(Question.id == question_id, Question.user_id == user_id))
     q = qres.scalar_one_or_none()
-    memres = await db.execute(
-        select(TutorMemory.note)
-        .where(TutorMemory.user_id == user_id)
-        .limit(5)
-    )
-
-    memories = [m[0] for m in memres.fetchall()]
     if not q or not q.question_json:
         raise HTTPException(404,"Question not found")
 
@@ -910,7 +928,12 @@ async def tutor_ask(
 
     memres = await db.execute(
         select(TutorMemory.note)
-        .where(TutorMemory.user_id == user_id)
+        .join(Concept, Concept.id == TutorMemory.concept_id)
+        .where(
+            TutorMemory.user_id == user_id,
+            Concept.user_id == user_id,
+            Concept.class_id == q.class_id,
+        )
         .order_by(TutorMemory.created_at.desc())
         .limit(5)
     )
@@ -1015,7 +1038,7 @@ async def tag_frequency(
 @router.get("/questions/{question_id}/next-step")
 async def next_step(
     question_id: UUID,
-    step_index: int,
+    step_index: int = Query(ge=0, le=1000),
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id)
 ):
@@ -1026,7 +1049,7 @@ async def next_step(
     if not q:
         raise HTTPException(404, "Question not found")
 
-    path = q.question_json.get("reasoning_path", [])
+    path = (q.question_json or {}).get("reasoning_path", [])
 
     if step_index >= len(path):
         return {"message":"Done"}
@@ -1034,8 +1057,8 @@ async def next_step(
     return {"next_step": path[step_index]}
     
 class CheckStepIn(BaseModel):
-    step: str
-    step_index: int
+    step: BoundedStep
+    step_index: int = Field(ge=0, le=1000)
 
 
 @router.post("/questions/{question_id}/check-step")
@@ -1052,7 +1075,7 @@ async def check_step(
     if not q:
         raise HTTPException(404, "Question not found")
 
-    expected = q.question_json.get("reasoning_path", [])
+    expected = (q.question_json or {}).get("reasoning_path", [])
 
     if payload.step_index >= len(expected):
         return {"result": "done"}
@@ -1080,7 +1103,7 @@ Return JSON:
     return json.loads(resp.choices[0].message.content)
     
 class WhyWrongIn(BaseModel):
-    step: str
+    step: BoundedStep
 
 
 @router.post("/questions/{question_id}/why-wrong")
@@ -1097,7 +1120,7 @@ async def why_wrong(
     if not q:
         raise HTTPException(404, "Question not found")
 
-    mistakes = q.question_json.get("common_mistakes", [])
+    mistakes = (q.question_json or {}).get("common_mistakes", [])
 
     resp = client.chat.completions.create(
         model="gpt-4.1-mini",
@@ -1124,7 +1147,7 @@ Explain why the step may be wrong and guide correction.
 @router.get("/questions/{question_id}/next-hint")
 async def next_hint(
     question_id: UUID,
-    hint_level: int = 1,
+    hint_level: int = Query(default=1, ge=1, le=3),
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
@@ -1135,7 +1158,7 @@ async def next_hint(
     if not q:
         raise HTTPException(404, "Question not found")
 
-    reasoning = q.question_json.get("reasoning_path", [])
+    reasoning = (q.question_json or {}).get("reasoning_path", [])
 
     resp = client.chat.completions.create(
         model="gpt-4.1-mini",
@@ -1369,7 +1392,10 @@ async def get_latest_practice(
             {
                 "id": str(q.id),
                 "prompt": q.prompt,
-                "question_json": q.question_json
+                "question_json": public_question_json(
+                    question_type=q.qtype,
+                    question_json=q.question_json,
+                ),
             }
             for q in qs
         ]

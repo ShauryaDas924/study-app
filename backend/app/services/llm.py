@@ -1,15 +1,22 @@
 
 
 
-import re
-import os, json
+import json
 import asyncio
-import pathlib
 import hashlib
+import logging
+import os
+import pathlib
+import re
 from openai import OpenAI
 import numpy as np
+from dotenv import load_dotenv
 from starlette.concurrency import run_in_threadpool
-EXAMPLE_QUESTIONS_PATH = pathlib.Path("practice_engine_spec.md")
+
+load_dotenv()
+logger = logging.getLogger(__name__)
+BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[2]
+EXAMPLE_QUESTIONS_PATH = BACKEND_ROOT / "practice_engine_spec.md"
 
 with open(EXAMPLE_QUESTIONS_PATH) as f:
     EXAMPLE_QUESTIONS = f.read()
@@ -375,7 +382,9 @@ async def top_k_concepts(query: str, concepts: list, k=5):
 
     return scored[:k]
  
-from jsonschema import validate, ValidationError
+from app.config import parse_bounded_int
+from app.services.kimi import KIMI_MODEL
+from app.services.schema_safety import validate_generated_json
 
 async def openai_chat_create(**kwargs):
     return await run_in_threadpool(client.chat.completions.create, **kwargs)
@@ -391,13 +400,22 @@ kimi_client = OpenAI(
     api_key=os.getenv("MOONSHOT_API_KEY"),
     base_url="https://api.moonshot.ai/v1"
 )
+CONCEPT_CHUNK_CONCURRENCY = parse_bounded_int(
+    os.getenv("CONCEPT_CHUNK_CONCURRENCY"),
+    name="CONCEPT_CHUNK_CONCURRENCY",
+    default=3,
+    minimum=1,
+    maximum=20,
+)
+
+
 def embed_text(text: str):
     resp = client.embeddings.create(
         model="text-embedding-3-small",
         input=text
     )
     return resp.data[0].embedding
-SCHEMA_PATH = pathlib.Path("practice_question_schema.json")
+SCHEMA_PATH = BACKEND_ROOT / "practice_question_schema.json"
 
 with open(SCHEMA_PATH) as f:
     QUESTION_SCHEMA = json.load(f)
@@ -454,8 +472,7 @@ def safe_json_loads(raw: str):
         except Exception:
             pass
 
-    print("\n⚠️ LLM JSON PARSE FAILED")
-    print("RAW OUTPUT:\n", raw)
+    logger.warning("llm_json_parse_failed output_chars=%d", len(text))
     return None
         
 # ================= BOOSTER =================
@@ -469,26 +486,25 @@ async def refine_notes(note_text: str):
     raw_text = note_text or ""
 
     text_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    cache_enabled = (os.getenv("ENABLE_REFINEMENT_CACHE") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    cache_path = BACKEND_ROOT / ".cache" / "refined_notes" / f"{text_hash}.txt"
 
-    cache_dir = pathlib.Path(".cache/refined_notes")
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    cache_path = cache_dir / f"{text_hash}.txt"
-
-    if cache_path.exists():
+    if cache_enabled and cache_path.exists():
         cached = cache_path.read_text(encoding="utf-8")
-        print(
-            "[refine_notes] cache_hit",
-            {
-                "raw_chars": len(raw_text),
-                "cached_chars": len(cached),
-                "hash": text_hash[:12],
-            },
+        logger.info(
+            "refine_notes_cache_hit raw_chars=%d cached_chars=%d",
+            len(raw_text),
+            len(cached),
         )
         return cached
 
     resp = await kimi_chat_create(
-        model="kimi-k2.5",
+        model=KIMI_MODEL,
         messages=[
             {"role": "system", "content": NOTES_REFINEMENT_PROMPT},
             {"role": "user", "content": raw_text},
@@ -499,7 +515,9 @@ async def refine_notes(note_text: str):
     parsed = safe_json_loads(raw)
 
     if not parsed:
-        cache_path.write_text(raw_text, encoding="utf-8")
+        if cache_enabled:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(raw_text, encoding="utf-8")
         return raw_text
 
     clean_notes = parsed.get("clean_notes", raw_text)
@@ -508,30 +526,28 @@ async def refine_notes(note_text: str):
     refined_len = len(clean_notes or "")
     retention_ratio = refined_len / max(original_len, 1)
 
-    print(
-        "[refine_notes] coverage_check",
-        {
-            "original_chars": original_len,
-            "refined_chars": refined_len,
-            "retention_ratio": round(retention_ratio, 3),
-            "hash": text_hash[:12],
-        },
+    logger.info(
+        "refine_notes_coverage original_chars=%d refined_chars=%d retention_ratio=%.3f",
+        original_len,
+        refined_len,
+        retention_ratio,
     )
 
     if original_len >= 5000 and retention_ratio < 0.80:
-        print(
-            "[refine_notes] rejected_refinement_too_compressed",
-            {
-                "original_chars": original_len,
-                "refined_chars": refined_len,
-                "minimum_required_chars": int(original_len * 0.80),
-                "hash": text_hash[:12],
-            },
+        logger.warning(
+            "refine_notes_rejected original_chars=%d refined_chars=%d minimum_chars=%d",
+            original_len,
+            refined_len,
+            int(original_len * 0.80),
         )
-        cache_path.write_text(raw_text, encoding="utf-8")
+        if cache_enabled:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(raw_text, encoding="utf-8")
         return raw_text
 
-    cache_path.write_text(clean_notes, encoding="utf-8")
+    if cache_enabled:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(clean_notes, encoding="utf-8")
     return clean_notes
     
 def booster_add_named_concepts(note_text: str, concepts: list):
@@ -1750,14 +1766,13 @@ async def extract_concepts_from_note(note_text: str):
     chunks = chunk_text_by_lines(cleaned, max_lines=55, overlap=8)
     all_concepts = []
 
-    CONCEPT_CHUNK_CONCURRENCY = int(os.getenv("CONCEPT_CHUNK_CONCURRENCY", "3"))
     sem = asyncio.Semaphore(CONCEPT_CHUNK_CONCURRENCY)
 
 
     async def extract_chunk_preserve_behavior(chunk: str, chunk_index: int):
         async with sem:
             resp = await kimi_chat_create(
-                model="kimi-k2.5",
+                model=KIMI_MODEL,
                 messages=[
                     {"role": "system", "content": CONCEPT_PROMPT},
                     {"role": "user", "content": chunk},
@@ -1765,11 +1780,14 @@ async def extract_concepts_from_note(note_text: str):
             )
 
             raw = resp.choices[0].message.content
-            print("\n📄 LLM RAW RESPONSE:\n", raw)
             parsed = safe_json_loads(raw)
-            print("\n✅ PARSED JSON:\n", parsed)
 
             if not parsed or "concepts" not in parsed:
+                logger.warning(
+                    "concept_chunk_parse_failed chunk_index=%d output_chars=%d",
+                    chunk_index,
+                    len(raw or ""),
+                )
                 return []
 
             chunk_concepts = parsed["concepts"]
@@ -1881,7 +1899,7 @@ async def extract_math_concepts_from_note(note_text: str):
         return []
 
     resp = await kimi_chat_create(
-        model="kimi-k2.5",
+        model=KIMI_MODEL,
         messages=[
             {"role": "system", "content": MATH_CONCEPT_PROMPT},
             {"role": "user", "content": cleaned},
@@ -1983,10 +2001,7 @@ async def generate_one_question(concepts: list, difficulty: int, subject_tag: st
     content = resp.choices[0].message.content
     q = json.loads(content)
 
-    try:
-        validate(instance=q, schema=QUESTION_SCHEMA)
-    except ValidationError as e:
-        raise ValueError(f"Invalid question format: {e}")
+    validate_generated_json(q, QUESTION_SCHEMA, kind="Question")
 
     return q
     
@@ -2012,10 +2027,10 @@ async def generate_mcq(concepts, difficulty, subject_tag):
     try:
         q = json.loads(raw)
     except json.JSONDecodeError:
-        print("⚠️ BAD MCQ JSON:\n", raw)
+        logger.warning("mcq_json_parse_failed output_chars=%d", len(raw or ""))
         raise ValueError("MCQ model returned invalid JSON")
 
-    validate(instance=q, schema=MCQ_SCHEMA)
+    validate_generated_json(q, MCQ_SCHEMA, kind="MCQ")
 
     return q
 
@@ -2836,19 +2851,10 @@ Concepts:
 
     backfill_cards = []
     if missing_concepts:
-        print("[flashcards] coverage_backfill_needed", {
-            "missing_high_value_concepts": len(missing_concepts),
-            "sample": [
-                {
-                    "name": c.get("name"),
-                    "type": c.get("type"),
-                    "role": c.get("role"),
-                    "budget": c.get("card_budget"),
-                    "confidence": c.get("confidence"),
-                }
-                for c in missing_concepts[:20]
-            ],
-        })
+        logger.info(
+            "flashcard_coverage_backfill missing_high_value_concepts=%d",
+            len(missing_concepts),
+        )
 
         backfill_cards = await generate_backfill_flashcards_from_concepts(
             missing_concepts,
@@ -2862,17 +2868,19 @@ Concepts:
     filtered_final = quality_filter_flashcards(deduped_final)
     budgeted_final = enforce_card_budgets(filtered_final, concepts)
 
-    print("[flashcards] counts", {
-        "raw": len(all_cards),
-        "unique": len(unique),
-        "repaired": len(repaired),
-        "deduped": len(deduped),
-        "filtered": len(filtered),
-        "first_pass_budgeted": len(budgeted_first_pass),
-        "missing_high_value_concepts": len(missing_concepts),
-        "backfill_generated": len(backfill_cards),
-        "final": len(budgeted_final),
-    })
+    logger.info(
+        "flashcard_generation raw=%d unique=%d repaired=%d deduped=%d filtered=%d "
+        "first_pass=%d missing_high_value=%d backfill=%d final=%d",
+        len(all_cards),
+        len(unique),
+        len(repaired),
+        len(deduped),
+        len(filtered),
+        len(budgeted_first_pass),
+        len(missing_concepts),
+        len(backfill_cards),
+        len(budgeted_final),
+    )
 
     return budgeted_final
     
@@ -3002,11 +3010,12 @@ Draft flashcards:
     deduped = dedupe_flashcards(repaired)
     filtered = quality_filter_flashcards(deduped)
 
-    print("[flashcards] grounding", {
-        "before": len(flashcards),
-        "after_grounding": len(grounded_cards),
-        "after_filtering": len(filtered),
-    })
+    logger.info(
+        "flashcard_grounding before=%d grounded=%d filtered=%d",
+        len(flashcards),
+        len(grounded_cards),
+        len(filtered),
+    )
 
     return filtered
 

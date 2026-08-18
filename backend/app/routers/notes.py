@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from uuid import UUID
-from typing import Optional
+from typing import Literal, Optional
+import json
 from app.jobs.concept_jobs import (
     concept_extraction_job,
     get_concept_job_status,
@@ -17,13 +18,13 @@ router = APIRouter(prefix="/notes", tags=["notes"])
 
 class NoteIn(BaseModel):
     class_id: UUID
-    title: str
+    title: str = Field(min_length=1, max_length=200)
     content_json: dict
     auto_extract: bool = False
-    mode: Optional[str] = None
+    mode: Optional[Literal["normal", "math"]] = None
     
 class StartExtractionIn(BaseModel):
-    mode: Optional[str] = None
+    mode: Optional[Literal["normal", "math"]] = None
 
 
 class StartExtractionOut(BaseModel):
@@ -50,6 +51,9 @@ async def create_note(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
+    if len(json.dumps(payload.content_json).encode("utf-8")) > 2 * 1024 * 1024:
+        raise HTTPException(413, "Note content is too large")
+
     class_res = await db.execute(
         select(Class.id).where(Class.id == payload.class_id, Class.user_id == user_id)
     )
@@ -90,8 +94,6 @@ async def create_note(
                 "finished_at": None,
             },
         )
-
-        print(f"[notes.create_note] queued extraction for note={obj.id} mode={mode}")
 
         background_tasks.add_task(
             concept_extraction_job,

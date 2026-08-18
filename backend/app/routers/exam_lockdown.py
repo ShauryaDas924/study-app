@@ -1,8 +1,10 @@
 from datetime import datetime, timezone
+import json
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,8 +39,8 @@ class TutorIn(BaseModel):
     class_id: UUID
     plan_id: UUID
     recommended_question_id: UUID
-    user_question: str | None = None
-    user_attempt: str | None = None
+    user_question: str | None = Field(default=None, max_length=4_000)
+    user_attempt: str | None = Field(default=None, max_length=20_000)
 
 
 class AttemptIn(BaseModel):
@@ -46,11 +48,11 @@ class AttemptIn(BaseModel):
     plan_id: UUID
     recommended_question_id: UUID
     session_id: UUID | None = None
-    user_answer_text: str | None = None
-    confidence: int | None = None
-    time_spent_sec: int | None = None
+    user_answer_text: str | None = Field(default=None, max_length=20_000)
+    confidence: int | None = Field(default=None, ge=1, le=5)
+    time_spent_sec: int | None = Field(default=None, ge=0, le=86_400)
     tutor_feedback_json: dict | None = None
-    status: str = "attempted"
+    status: Literal["attempted", "completed", "skipped"] = "attempted"
 
 
 async def ensure_class_owned(db: AsyncSession, user_id: UUID, class_id: UUID):
@@ -353,6 +355,11 @@ async def save_attempt(
     db: AsyncSession = Depends(get_db),
     user_id: UUID = Depends(get_current_user_id),
 ):
+    if payload.tutor_feedback_json and len(
+        json.dumps(payload.tutor_feedback_json).encode("utf-8")
+    ) > 100_000:
+        raise HTTPException(413, "Tutor feedback is too large")
+
     await get_owned_plan(db, user_id, payload.class_id, payload.plan_id)
     rec, question, _material = await load_recommendation_context(
         db,
@@ -374,7 +381,7 @@ async def save_attempt(
         if not session_res.scalar_one_or_none():
             raise HTTPException(404, "Exam Lockdown session not found")
 
-    status = payload.status if payload.status in {"attempted", "completed", "skipped"} else "attempted"
+    status = payload.status
     attempt = ExamLockdownAttempt(
         user_id=user_id,
         class_id=payload.class_id,

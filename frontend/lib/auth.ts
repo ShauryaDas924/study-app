@@ -2,6 +2,7 @@
 
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
+import { clearClientAccountState } from "@/lib/privacy";
 
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -42,6 +43,7 @@ export async function redirectToLogin() {
 
 export async function handleUnauthorized() {
   await supabase.auth.signOut();
+  clearClientAccountState();
   await redirectToLogin();
 }
 
@@ -50,13 +52,16 @@ export async function authFetch(
   init?: RequestInit
 ): Promise<Response> {
   const headers = new Headers(init?.headers);
-  const authHeaders = await getAuthHeaders();
+  const url = apiUrl(pathOrUrl);
+  const apiOrigin = new URL(API_BASE_URL).origin;
+  const requestOrigin = new URL(url).origin;
+  const authHeaders = requestOrigin === apiOrigin ? await getAuthHeaders() : {};
 
   for (const [key, value] of Object.entries(authHeaders)) {
     headers.set(key, value);
   }
 
-  const res = await fetch(apiUrl(pathOrUrl), {
+  const res = await fetch(url, {
     ...init,
     headers,
   });
