@@ -383,6 +383,7 @@ async def top_k_concepts(query: str, concepts: list, k=5):
     return scored[:k]
  
 from app.config import parse_bounded_int
+from app.services.kimi import KIMI_MODEL
 from app.services.schema_safety import validate_generated_json
 
 async def openai_chat_create(**kwargs):
@@ -503,7 +504,7 @@ async def refine_notes(note_text: str):
         return cached
 
     resp = await kimi_chat_create(
-        model="kimi-k2.5",
+        model=KIMI_MODEL,
         messages=[
             {"role": "system", "content": NOTES_REFINEMENT_PROMPT},
             {"role": "user", "content": raw_text},
@@ -1771,7 +1772,7 @@ async def extract_concepts_from_note(note_text: str):
     async def extract_chunk_preserve_behavior(chunk: str, chunk_index: int):
         async with sem:
             resp = await kimi_chat_create(
-                model="kimi-k2.5",
+                model=KIMI_MODEL,
                 messages=[
                     {"role": "system", "content": CONCEPT_PROMPT},
                     {"role": "user", "content": chunk},
@@ -1898,7 +1899,7 @@ async def extract_math_concepts_from_note(note_text: str):
         return []
 
     resp = await kimi_chat_create(
-        model="kimi-k2.5",
+        model=KIMI_MODEL,
         messages=[
             {"role": "system", "content": MATH_CONCEPT_PROMPT},
             {"role": "user", "content": cleaned},

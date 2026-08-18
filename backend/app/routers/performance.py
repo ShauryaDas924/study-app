@@ -6,6 +6,7 @@ from app.services.file_extraction import extract_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from uuid import UUID
+from app.services.kimi import KIMI_MODEL
 from app.services.llm import client, kimi_client
 from app.db import get_db
 from app.models import Class, Concept, ExamInsight
@@ -101,7 +102,7 @@ async def analyze_exam(
     
     
     resp = kimi_client.chat.completions.create(
-        model="kimi-k2.5",
+        model=KIMI_MODEL,
         messages=[
             {
                 "role": "system",

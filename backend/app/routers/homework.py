@@ -21,6 +21,7 @@ from app.models import (
 )
 
 from app.db import get_db
+from app.services.kimi import KIMI_MODEL, build_kimi_user_content
 from app.services.llm import client, kimi_client, top_k_concepts
 from app.services.file_extraction import extract_text, validate_image_bytes, validate_pdf_bytes
 from app.services.auth import get_current_user_id
@@ -303,7 +304,7 @@ async def homework_help(
         )
 
         resp = kimi_client.chat.completions.create(
-            model="kimi-k2.5",
+            model=KIMI_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -363,7 +364,7 @@ cash_flow_classification
         strengths = data.get("strengths", [])
         pitfalls = data.get("pitfalls", [])
         natural_resp = kimi_client.chat.completions.create(
-            model="kimi-k2.5",
+            model=KIMI_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -1125,7 +1126,7 @@ Grounding mode: weak_or_no_context
     # 2) LLM call
     t_tutor = time.perf_counter()
     resp = kimi_client.chat.completions.create(
-        model="kimi-k2.5",
+        model=KIMI_MODEL,
         messages=[
             {
                 "role": "system",
@@ -1388,13 +1389,18 @@ async def review_student_work(
 
     logger.info("review_work_retrieval matches=%d", len(scored_concepts))
 
-    img_b64 = base64.b64encode(content).decode()
+    media_b64 = base64.b64encode(content).decode() if mime_type.startswith("image/") else None
+    review_evidence = clip_text(review_text, 3500) or (
+        "No extracted text available; review the attached image."
+        if media_b64
+        else "No extractable PDF text was available. Do not infer unseen work."
+    )
 
     # -------- BUILD CONCEPT CONTEXT --------
     context = concept_context_block(scored_concepts)[:2200]
 
     resp = kimi_client.chat.completions.create(
-        model="kimi-k2.5",
+        model=KIMI_MODEL,
         messages=[
             {
                 "role": "system",
@@ -1410,13 +1416,13 @@ async def review_student_work(
             • If a mistake occurs, explain which concept is misused
             • Reference concept names when appropriate
 
-            The student uploaded an image showing their handwritten work on a problem.
+            The student uploaded work on a problem.
 
             Your job is NOT to immediately solve the problem.
 
             Your job is to carefully evaluate the student's reasoning so far and guide them toward the correct solution.
 
-            The student uploaded an image showing their handwritten work on a problem.
+            The student uploaded work on a problem.
 
             Your job is NOT to immediately solve the problem.
     
@@ -1543,22 +1549,15 @@ Equations: $$...$$
             },
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"""Here is my work so far on the problem. Please review it.
+                "content": build_kimi_user_content(
+                    f"""Here is my work so far on the problem. Please review it.
 
 Extracted text from upload, if available:
-{clip_text(review_text, 3500) or "No extracted text available; use the uploaded file content."}
-"""
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime_type};base64,{img_b64}"
-                        }
-                    }
-                ]
+{review_evidence}
+""",
+                    mime_type=mime_type,
+                    media_base64=media_b64,
+                )
             }
         ],
     )
@@ -1629,7 +1628,7 @@ Common pitfall: {c.pitfalls or "Students often misapply this concept."}
     ])[:2500]
 
     structured_resp = kimi_client.chat.completions.create(
-        model="kimi-k2.5",
+        model=KIMI_MODEL,
         messages=[
             {
                 "role": "system",
@@ -1678,28 +1677,20 @@ Rules:
             },
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"""
+                "content": build_kimi_user_content(
+                    f"""
 Student prompt: {body.user_prompt}
 Selected step: {body.selected_step or ""}
 Requested action: {body.action}
 
 Extracted text from upload:
-{session.extracted_text[:5000]}
-"""
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime_type};base64,{session.image_base64}"
-                        }
-                    }
-                ]
+{(session.extracted_text or "No extractable text was available. Do not infer unseen work.")[:5000]}
+""",
+                    mime_type=mime_type,
+                    media_base64=session.image_base64,
+                )
             }
         ],
-        temperature=0.2,
     )
 
     raw_structured = structured_resp.choices[0].message.content
@@ -1720,7 +1711,7 @@ Extracted text from upload:
         }
 
     natural_resp = kimi_client.chat.completions.create(
-        model="kimi-k2.5",
+        model=KIMI_MODEL,
         messages=[
             {
                 "role": "system",
@@ -1754,7 +1745,6 @@ Structured review:
 """
             }
         ],
-        temperature=0.3,
     )
 
     response_markdown = natural_resp.choices[0].message.content
@@ -1955,7 +1945,7 @@ Common mistake: {c.pitfalls}
 
     # -------- GENERATE QUESTIONS --------
     resp = kimi_client.chat.completions.create(
-        model="kimi-k2.5",
+        model=KIMI_MODEL,
         messages=[
             {
                 "role": "system",
