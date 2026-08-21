@@ -149,6 +149,3 @@ Read [Privacy and security](docs/PRIVACY_AND_SECURITY.md) before running the app
 - [Planning implementation note](backend/study_plan_system.md)
 - [Learning loop](backend/learning_loop.md)
 
-## License
-
-No license has currently been granted. Public visibility permits inspection of the repository but should not be interpreted as permission to copy, modify, or redistribute it. The owner can choose a license later.
